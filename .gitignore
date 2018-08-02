@@ -1,0 +1,4 @@
+*.o
+yaesutool
+**/backup.img
+**/device.conf

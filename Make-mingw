@@ -1,0 +1,18 @@
+CC		= gcc -m32
+
+CFLAGS		= -g -O -Wall -DMINGW32 -Werror
+LDFLAGS		= -s
+
+OBJS		= main.o util.o radio.o ft-60.o
+LIBS            =
+
+all:		yaesutool.exe
+
+yaesutool.exe:	$(OBJS)
+		$(CC) $(LDFLAGS) -o $@ $(OBJS) $(LIBS)
+
+###
+ft-60.o: ft-60.c radio.h util.h
+main.o: main.c radio.h util.h
+radio.o: radio.c radio.h util.h
+util.o: util.c util.h
