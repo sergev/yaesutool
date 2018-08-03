@@ -128,12 +128,15 @@ static void vx2_print_version(FILE *out)
 // When start==0, return non-zero on success or 0 when empty.
 // When start!=0, halt the program on any error.
 //
-static int read_block(int fd, int start, unsigned char *data, int nbytes)
+static int read_block(int fd, int start, unsigned char *data, int datalen)
 {
     unsigned char reply;
-    int len;
+    int len, nbytes;
+    int need_ack = (datalen <= 16);
 
-    // Read data.
+again:
+    // Read chunk of data.
+    nbytes = (datalen < 64) ? datalen : 64;
     len = serial_read(fd, data, nbytes);
     if (len != nbytes) {
         if (start == 0)
@@ -142,8 +145,8 @@ static int read_block(int fd, int start, unsigned char *data, int nbytes)
         exit(-1);
     }
 
-    if (nbytes <= 16) {
-        // Get acknowledge.
+    if (need_ack) {
+        // Send acknowledge.
         serial_write(fd, "\x06", 1);
         if (serial_read(fd, &reply, 1) != 1) {
             fprintf(stderr, "No acknowledge after block 0x%04x.\n", start);
@@ -165,6 +168,13 @@ static int read_block(int fd, int start, unsigned char *data, int nbytes)
             fprintf(stderr, "#");
             fflush(stderr);
         }
+    }
+
+    if (nbytes < datalen) {
+        start += nbytes;
+        data += nbytes;
+        datalen -= nbytes;
+        goto again;
     }
     return 1;
 }

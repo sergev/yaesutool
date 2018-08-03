@@ -36,7 +36,7 @@
 #include "util.h"
 
 int radio_port;                         // File descriptor of programming serial port
-unsigned char radio_mem [0x10000];      // Radio: memory contents
+unsigned char radio_mem [0x10000];      // Radio memory contents, up to 64kbytes
 int radio_progress;                     // Read/write progress counter
 
 static radio_device_t *device;          // Device-dependent interface
@@ -60,7 +60,6 @@ void radio_disconnect()
 //
 void radio_print_version(FILE *out)
 {
-    fprintf(out, "Radio: %s\n", device->name);
     device->print_version(out);
 }
 
@@ -75,9 +74,9 @@ void radio_connect(const char *port_name, const char *radio_type)
         device = &radio_vx2;
     }
 
-    fprintf(stderr, "Connect to %s at %d.\n", port_name, device->baud);
-    radio_port = serial_open(port_name, device->baud);
     printf("Radio: %s\n", device->name);
+    fprintf(stderr, "Connect to %s at %d baud.\n", port_name, device->baud);
+    radio_port = serial_open(port_name, device->baud);
 }
 
 //
