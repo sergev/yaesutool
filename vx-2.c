@@ -171,6 +171,7 @@ again:
     }
 
     if (nbytes < datalen) {
+        // Next chunk.
         start += nbytes;
         data += nbytes;
         datalen -= nbytes;
@@ -184,11 +185,15 @@ again:
 // Halt the program on any error.
 // Return 0 on error.
 //
-static int write_block(int fd, int start, const unsigned char *data, int nbytes)
+static int write_block(int fd, int start, const unsigned char *data, int datalen)
 {
     unsigned char reply[64];
-    int len;
+    int len, nbytes;
+    int need_ack = (datalen <= 16);
 
+again:
+    // Write chunk of data.
+    nbytes = (datalen < 64) ? datalen : 64;
     serial_write(fd, data, nbytes);
 
     // Get echo.
@@ -198,15 +203,18 @@ static int write_block(int fd, int start, const unsigned char *data, int nbytes)
         return 0;
     }
 
-    // Get acknowledge.
-    if (serial_read(fd, reply, 1) != 1) {
-        fprintf(stderr, "! No acknowledge after block 0x%04x.\n", start);
-        return 0;
+    if (need_ack) {
+        // Get acknowledge.
+        if (serial_read(fd, reply, 1) != 1) {
+            fprintf(stderr, "! No acknowledge after block 0x%04x.\n", start);
+            return 0;
+        }
+        if (reply[0] != 0x06) {
+            fprintf(stderr, "! Bad acknowledge after block 0x%04x: %02x\n", start, reply[0]);
+            return 0;
+        }
     }
-    if (reply[0] != 0x06) {
-        fprintf(stderr, "! Bad acknowledge after block 0x%04x: %02x\n", start, reply[0]);
-        return 0;
-    }
+
     if (verbose) {
         printf("# Write 0x%04x: ", start);
         print_hex(data, nbytes);
@@ -218,7 +226,31 @@ static int write_block(int fd, int start, const unsigned char *data, int nbytes)
             fflush(stderr);
         }
     }
+
+    if (nbytes < datalen) {
+        // Next chunk.
+        start += nbytes;
+        data += nbytes;
+        datalen -= nbytes;
+        goto again;
+    }
     return 1;
+}
+
+static void send_final_ack(int fd)
+{
+    unsigned char reply;
+
+    // Send acknowledge.
+    serial_write(fd, "\x06", 1);
+    if (serial_read(fd, &reply, 1) != 1) {
+        fprintf(stderr, "No final acknowledge.\n");
+        exit(-1);
+    }
+    if (reply != 0x06) {
+        fprintf(stderr, "Bad final acknowledge: %02x\n", reply);
+        exit(-1);
+    }
 }
 
 //
@@ -238,7 +270,7 @@ static void vx2_download()
     fprintf(stderr, "   CLONE wil appear on the display.\n");
     fprintf(stderr, "3. Press the BAND key until the radio starts to send.\n");
     fprintf(stderr, "-- Or enter ^C to abort the memory read.\n");
-//again:
+again:
     fprintf(stderr, "\n");
     fprintf(stderr, "Waiting for data... ");
     fflush(stderr);
@@ -268,10 +300,12 @@ static void vx2_download()
         fprintf(stderr, "Please, repeat the procedure:\n");
         fprintf(stderr, "Press and hold the PTT switch until the radio starts to send.\n");
         fprintf(stderr, "Or enter ^C to abort the memory read.\n");
-//        goto again;
+        goto again;
     }
     if (verbose)
         printf("Checksum = %02x (OK)\n", radio_mem[MEMSZ]);
+
+    send_final_ack(radio_port);
 }
 
 //
