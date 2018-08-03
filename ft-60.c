@@ -33,7 +33,7 @@
 #include "radio.h"
 #include "util.h"
 
-#define NCHAN           1100
+#define NCHAN           1000
 #define NPMS            50
 #define MEMSZ           0x6fc8
 
@@ -858,12 +858,7 @@ static void ft60_print_config(FILE *out, int verbose)
             continue;
         }
 
-        if (i < 1000) {
-            fprintf(out, "%5d", i+1);
-        } else {
-            fprintf(out, "  %c%02d", (i & 1) ? 'U' : 'L', i/2 - 499);
-        }
-        fprintf(out, "   %-7s %8.4f ", name[0] ? name : "-", rx_hz / 1000000.0);
+        fprintf(out, "%5d   %-7s %8.4f ", i+1, name[0] ? name : "-", rx_hz / 1000000.0);
         print_offset(out, rx_hz, tx_hz);
         fprintf(out, " ");
         print_squelch(out, rx_ctcs, rx_dcs);
@@ -1097,18 +1092,13 @@ static int parse_channel(int first_row, char *line)
     int num, tmode, tone, dtcs, power, wide, scan, isam, banks;
     double rx_mhz, tx_mhz;
 
+    //TODO
     if (sscanf(line, "%s %s %s %s %s %s %s %s %s %s",
         num_str, name_str, rxfreq_str, offset_str, rq_str, tq_str, power_str,
         wide_str, scan_str, banks_str) != 10)
         return 0;
 
-    if (num_str[0] == 'L') {
-        num = atoi(num_str+1) * 2 + 999;
-    } else if (num_str[0] == 'U') {
-        num = atoi(num_str+1) * 2 + 1000;
-    } else {
-        num = atoi(num_str);
-    }
+    num = atoi(num_str);
     if (num < 1 || num > NCHAN) {
         fprintf(stderr, "Bad channel number.\n");
         return 0;
@@ -1192,6 +1182,7 @@ static int parse_home(int first_row, char *line)
     int band, tmode, tone, dtcs, power, wide, isam;
     double rx_mhz, tx_mhz;
 
+    //TODO
     if (sscanf(line, "%s %s %s %s %s %s %s",
         band_str, rxfreq_str, offset_str, rq_str, tq_str,
         power_str, wide_str) != 7)
@@ -1259,6 +1250,7 @@ static int parse_pms(int first_row, char *line)
     int num;
     double lower_mhz, upper_mhz;
 
+    //TODO
     if (sscanf(line, "%s %s %s", num_str, lower_str, upper_str) != 3)
         return 0;
 
