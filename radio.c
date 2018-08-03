@@ -85,12 +85,12 @@ void radio_connect(const char *port_name, const char *radio_type)
 void radio_download()
 {
     radio_progress = 0;
-    if (! verbose)
+    if (! serial_verbose)
         fprintf(stderr, "Read device: ");
 
     device->download();
 
-    if (! verbose)
+    if (! serial_verbose)
         fprintf(stderr, " done.\n");
 }
 
@@ -105,13 +105,13 @@ void radio_upload(int cont_flag)
         exit(-1);
     }
     radio_progress = 0;
-    if (! verbose)
+    if (! serial_verbose)
         fprintf(stderr, "Write device: ");
 
     serial_flush(radio_port);
     device->upload(cont_flag);
 
-    if (! verbose)
+    if (! serial_verbose)
         fprintf(stderr, " done.\n");
 }
 

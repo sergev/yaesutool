@@ -79,13 +79,13 @@ int main(int argc, char **argv)
     textdomain("yaesutool");
 
     copyright = _("Copyright (C) 2018 Serge Vakulenko KK6ABQ");
-    verbose = 0;
+    serial_verbose = 0;
     for (;;) {
         switch (getopt(argc, argv, "vcwt:")) {
-        case 'v': ++verbose;     continue;
-        case 'w': ++write_flag;  continue;
-        case 'c': ++config_flag; continue;
-        case 't': type = optarg; continue;
+        case 'v': ++serial_verbose; continue;
+        case 'w': ++write_flag;     continue;
+        case 'c': ++config_flag;    continue;
+        case 't': type = optarg;    continue;
         default:
             usage();
         case EOF:

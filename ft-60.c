@@ -152,7 +152,7 @@ static int read_block(int fd, int start, unsigned char *data, int nbytes)
         fprintf(stderr, "Bad acknowledge after block 0x%04x: %02x\n", start, reply);
         exit(-1);
     }
-    if (verbose) {
+    if (serial_verbose) {
         printf("# Read 0x%04x: ", start);
         print_hex(data, nbytes);
         printf("\n");
@@ -194,7 +194,7 @@ static int write_block(int fd, int start, const unsigned char *data, int nbytes)
         fprintf(stderr, "! Bad acknowledge after block 0x%04x: %02x\n", start, reply[0]);
         return 0;
     }
-    if (verbose) {
+    if (serial_verbose) {
         printf("# Write 0x%04x: ", start);
         print_hex(data, nbytes);
         printf("\n");
@@ -215,7 +215,7 @@ static void ft60_download()
 {
     int addr, sum;
 
-    if (verbose)
+    if (serial_verbose)
         fprintf(stderr, "\nPlease follow the procedure:\n");
     else
         fprintf(stderr, "please follow the procedure.\n");
@@ -248,7 +248,7 @@ again:
         sum += radio_mem[addr];
     sum = sum & 0xff;
     if (sum != radio_mem[MEMSZ]) {
-        if (verbose) {
+        if (serial_verbose) {
             printf("Checksum = %02x (BAD)\n", radio_mem[MEMSZ]);
             fprintf(stderr, "BAD CHECKSUM!\n");
         } else
@@ -258,7 +258,7 @@ again:
         fprintf(stderr, "Or enter ^C to abort the memory read.\n");
         goto again;
     }
-    if (verbose)
+    if (serial_verbose)
         printf("Checksum = %02x (OK)\n", radio_mem[MEMSZ]);
 }
 
@@ -270,7 +270,7 @@ static void ft60_upload(int cont_flag)
     int addr, sum;
     char buf[80];
 
-    if (verbose)
+    if (serial_verbose)
         fprintf(stderr, "\nPlease follow the procedure:\n");
     else
         fprintf(stderr, "please follow the procedure.\n");
