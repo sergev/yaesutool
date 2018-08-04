@@ -1,4 +1,4 @@
-CC		= gcc -m64
+CC		= gcc -m32
 
 VERSION         = 1.0
 CFLAGS		= -g -O -Wall -Werror -DVERSION='"$(VERSION)"'

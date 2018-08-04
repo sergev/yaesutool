@@ -34,6 +34,7 @@
 #include "util.h"
 
 #define NCHAN           1000
+#define NBANKS          10
 #define NPMS            50
 #define MEMSZ           0x6fc8
 
@@ -466,7 +467,7 @@ static int decode_banks(int i)
     int b, mask, data;
 
     mask = 0;
-    for (b=0; b<10; b++) {
+    for (b=0; b<NBANKS; b++) {
         data = radio_mem [OFFSET_BANKS + b * 0x80 + i/8];
         if ((data >> (i & 7)) & 1)
             mask |= 1 << b;
@@ -482,7 +483,7 @@ static void setup_banks(int i, int mask)
     int b;
     unsigned char *data;
 
-    for (b=0; b<10; b++) {
+    for (b=0; b<NBANKS; b++) {
         data = &radio_mem [OFFSET_BANKS + b * 0x80 + i/8];
         if ((mask >> b) & 1)
             *data |= 1 << (i & 7);
@@ -810,7 +811,7 @@ static char *format_banks(int mask)
     int b;
 
     p = buf;
-    for (b=0; b<10; b++) {
+    for (b=0; b<NBANKS; b++) {
         if ((mask >> b) & 1)
             *p++ = "1234567890" [b];
     }
@@ -826,6 +827,8 @@ static char *format_banks(int mask)
 static void ft60_print_config(FILE *out, int verbose)
 {
     int i;
+
+    fprintf(out, "Radio: Yaesu FT-60R\n");
 
     //
     // Memory channels.

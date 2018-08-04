@@ -238,11 +238,13 @@ badline:            fprintf(stderr, "Invalid line: '%s'\n", line);
                 p++;
             if (*p == '#' || *p == 0)
                 continue;
-            if (! table_id)
+            if (! table_id) {
                 goto badline;
+            }
 
-            if (! device->parse_row(table_id, ! table_dirty, p))
+            if (! device->parse_row(table_id, ! table_dirty, p)) {
                 goto badline;
+            }
             table_dirty = 1;
         }
     }

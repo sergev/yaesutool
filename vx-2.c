@@ -34,6 +34,7 @@
 #include "util.h"
 
 #define NCHAN           1000
+#define NBANKS          20
 #define NPMS            50
 #define MEMSZ           32594
 
@@ -42,7 +43,7 @@
 #define OFFSET_VFO      0x04e2  // 12 variable frequency channels
 #define OFFSET_BANKS    0x05c2  // 20 banks by 100 channels
 #define OFFSET_CHANNELS 0x17c2  // 1000 memory channels
-#define OFFSET_PMS      0x40c8  // 50 programmable memory scan channel pairs
+#define OFFSET_PMS      0x5e12  // 50 programmable memory scan channel pairs
 #define OFFSET_SCAN     0x6ec8  // TODO
 
 static const char CHARSET[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ !`o$%&'()*+,-./|;/=>?@[~]^__";
@@ -98,6 +99,8 @@ typedef struct {
 #define T_DTCS          3
                 _u3       : 4,
                 power     : 2;  // Transmit power level
+#define PWR_HIGH        0
+#define PWR_LOW         3
     uint8_t     name[6];        // Channel name
     uint8_t     offset[3];      // Transmit frequency offset
     uint8_t     tone      : 6,  // CTCSS tone select
@@ -358,6 +361,7 @@ again:
     if (! fgets(buf, sizeof(buf), stdin))
 	/*ignore*/;
     fprintf(stderr, "Sending data... ");
+    serial_flush(radio_port);
     fflush(stderr);
 
     if (! write_block(radio_port, 0, &radio_mem[0], 10)) {
@@ -476,15 +480,16 @@ static int encode_squelch(char *rx, char *tx, int *tone, int *dcs)
 //
 static int freq_to_hz(uint8_t *bcd)
 {
-    int hz;
+    int a  = bcd[0] >> 4;
+    int b  = bcd[0] & 15;
+    int c  = bcd[1] >> 4;
+    int d  = bcd[1] & 15;
+    int e  = bcd[2] >> 4;
+    int f  = bcd[2] & 15;
+    int hz = (((((a*10 + b) * 10 + c) * 10 + d) * 10 + e) * 10 + f) * 1000;
 
-    hz = (bcd[2]       & 15) * 1000 +
-        ((bcd[2] >> 4) & 15) * 10000 +
-         (bcd[1]       & 15) * 100000 +
-        ((bcd[1] >> 4) & 15) * 1000000 +
-         (bcd[0]       & 15) * 10000000 +
-        ((bcd[0] >> 4) & 15) * 100000000;
-    //hz += (bcd[0] >> 6) * 2500;
+    if (f == 2 || f == 7)
+        hz += 500;
     return hz;
 }
 
@@ -494,6 +499,11 @@ static int freq_to_hz(uint8_t *bcd)
 //
 static void hz_to_freq(int hz, uint8_t *bcd)
 {
+    if (hz == 0) {
+        bcd[0] = bcd[1] = bcd[2] = 0xff;
+        return;
+    }
+
     bcd[0] = (hz / 100000000 % 10) << 4 |
              (hz / 10000000  % 10);
     bcd[1] = (hz / 1000000   % 10) << 4 |
@@ -503,6 +513,18 @@ static void hz_to_freq(int hz, uint8_t *bcd)
 }
 
 //
+// Round double value to integer.
+//
+static int iround(double x)
+{
+    if (x >= 0)
+        return (int)(x + 0.5);
+
+    return -(int)(-x + 0.5);
+}
+
+#if 0 // TODO
+//
 // Get a bitmask of banks for a given channel.
 //
 static int decode_banks(int i)
@@ -510,7 +532,7 @@ static int decode_banks(int i)
     int b, mask, data;
 
     mask = 0;
-    for (b=0; b<10; b++) {
+    for (b=0; b<NBANKS; b++) {
         data = radio_mem [OFFSET_BANKS + b * 0x80 + i/8];
         if ((data >> (i & 7)) & 1)
             mask |= 1 << b;
@@ -526,14 +548,55 @@ static void setup_banks(int i, int mask)
     int b;
     unsigned char *data;
 
-    for (b=0; b<10; b++) {
-        data = &radio_mem [OFFSET_BANKS + b * 0x80 + i/8];
+    for (b=0; b<NBANKS; b++) {
+        data = &radio_mem[OFFSET_BANKS + b * 0x80 + i/8];
         if ((mask >> b) & 1)
             *data |= 1 << (i & 7);
         else
             *data &= ~(1 << (i & 7));
     }
 }
+
+//
+// Print the list of channel banks.
+//
+static char *format_banks(int mask)
+{
+    static char buf [16];
+    char *p;
+    int b;
+
+    p = buf;
+    for (b=0; b<NBANKS; b++) {
+        if ((mask >> b) & 1)
+            *p++ = "1234567890" [b];
+    }
+    if (p == buf)
+        *p++ = '-';
+    *p = 0;
+    return buf;
+}
+
+//
+// Parse the 'banks' parameter value.
+//
+static int encode_banks(char *str)
+{
+    int mask;
+
+    if (*str == '-')
+        return 0;
+
+    for (mask=0; *str; str++) {
+        if (*str < '0' || *str > '9') {
+            fprintf(stderr, "Bad banks mask = '%s'\n", str);
+            exit(-1);
+        }
+        mask |= 1 << (*str - '0');
+    }
+    return mask;
+}
+#endif
 
 //
 // Extract channel name.
@@ -584,8 +647,10 @@ static void encode_name(uint8_t *internal, char *name)
 {
     int n;
 
-    if (name && *name && *name != '-') {
+    if (name && *name) {
         // Setup channel name.
+        if (*name == '-')
+            name = "      ";
         for (n=0; n<6 && name[n]; n++) {
             internal[n] = encode_char(name[n]);
         }
@@ -611,7 +676,7 @@ static void encode_name(uint8_t *internal, char *name)
 static void decode_channel(int i, int seek, char *name,
     int *rx_hz, int *tx_hz, int *rx_ctcs, int *tx_ctcs,
     int *rx_dcs, int *tx_dcs, int *power,
-    int *scan, int *amfm, int *step, int *banks)
+    int *scan, int *amfm, int *step)
 {
     memory_channel_t *ch = i + (memory_channel_t*) &radio_mem[seek];
     //TODO: int scan_data = radio_mem[OFFSET_SCAN + i/4];
@@ -620,9 +685,7 @@ static void decode_channel(int i, int seek, char *name,
     *power = *scan = *amfm = *step = 0;
     if (name)
         *name = 0;
-    if (banks)
-        *banks = 0;
-    if (ch->name[0] == 0xff && (seek == OFFSET_CHANNELS || seek == OFFSET_PMS))
+    if (ch->rxfreq[0] == 0xff && (seek == OFFSET_CHANNELS || seek == OFFSET_PMS))
         return;
 
     // Extract channel name.
@@ -665,34 +728,31 @@ static void decode_channel(int i, int seek, char *name,
     *scan = 0 /*TODO: (scan_data << ((i & 3) * 2) >> 6) & 3*/;
     *amfm = ch->isnarrow ? MOD_NFM : ch->amfm;
     *step = ch->step;
-
-    if (seek == OFFSET_CHANNELS)
-        *banks = decode_banks(i);
 }
 
 //
 // Set the parameters for a given memory channel.
 //
 static void setup_channel(int i, char *name, double rx_mhz, double tx_mhz,
-    int tmode, int tone, int dcs, int power, int scan, int amfm, int banks)
+    int tmode, int tone, int dcs, int power, int scan, int amfm)
 {
     memory_channel_t *ch = i + (memory_channel_t*) &radio_mem[OFFSET_CHANNELS];
 
     hz_to_freq((int) (rx_mhz * 1000000.0), ch->rxfreq);
 
-    double offset_mhz = tx_mhz - rx_mhz;
+    int offset_khz = iround((tx_mhz - rx_mhz) * 1000);
     ch->offset[0] = ch->offset[1] = ch->offset[2] = 0;
-    if (offset_mhz == 0) {
+    if (offset_khz == 0) {
         ch->duplex = D_SIMPLEX;
-    } else if (offset_mhz > 0 && offset_mhz < 100) {
+    } else if (offset_khz > 0 && offset_khz < 100000) {
         ch->duplex = D_POS_OFFSET;
-        hz_to_freq((int) (offset_mhz * 1000000.0), ch->offset);
-    } else if (offset_mhz < 0 && offset_mhz > -100) {
+        hz_to_freq(offset_khz * 1000, ch->offset);
+    } else if (offset_khz < 0 && -offset_khz < 100000) {
         ch->duplex = D_NEG_OFFSET;
-        hz_to_freq((int) (-offset_mhz * 1000000.0), ch->offset);
+        hz_to_freq(-offset_khz * 1000, ch->offset);
     } else {
         ch->duplex = D_CROSS_BAND;
-        hz_to_freq((int) (tx_mhz * 1000000.0), ch->offset);
+        hz_to_freq((int) (tx_mhz * 1000000 + 0.5), ch->offset);
     }
     ch->tmode = tmode;
     ch->tone = tone;
@@ -718,40 +778,37 @@ static void setup_channel(int i, char *name, double rx_mhz, double tx_mhz,
     *scan_data &= ~(3 << scan_shift);
     *scan_data |= scan << scan_shift;
 #endif
-    setup_banks(i, banks);
 }
 
 //
 // Set the parameters for a given home channel.
-// Band selects the channel: 144, 250, 350, 430 or 850.
+// Band selects the channel:
+//      band  = 1 2 3 4 5 6 7 8 9 10 11
+//      index = 0 1 2 3 5 6 7 8 9 10 11
+// Channel index 4 is not used.
 //
 static void setup_home(int band, double rx_mhz, double tx_mhz,
     int tmode, int tone, int dcs, int power, int amfm, int step)
 {
-    memory_channel_t *ch = (memory_channel_t*) &radio_mem[OFFSET_HOME];
+    // Skip home channel index #4.
+    int index = (band <= 4) ? band-1 : band;
+    memory_channel_t *ch = index + (memory_channel_t*) &radio_mem[OFFSET_HOME];
 
-    switch (band) {
-    default:  break;
-    case 250: ch += 1; break;
-    case 350: ch += 2; break;
-    case 430: ch += 3; break;
-    case 850: ch += 4; break;
-    }
     hz_to_freq((int) (rx_mhz * 1000000.0), ch->rxfreq);
 
-    double offset_mhz = tx_mhz - rx_mhz;
+    int offset_khz = iround((tx_mhz - rx_mhz) * 1000);
     ch->offset[0] = ch->offset[1] = ch->offset[2] = 0;
-    if (offset_mhz == 0) {
+    if (offset_khz == 0) {
         ch->duplex = D_SIMPLEX;
-    } else if (offset_mhz > 0 && offset_mhz < 256 * 0.05) {
+    } else if (offset_khz > 0 && offset_khz < 100000) {
         ch->duplex = D_POS_OFFSET;
-        hz_to_freq((int) (offset_mhz * 1000000.0), ch->offset);
-    } else if (offset_mhz < 0 && offset_mhz > -256 * 0.05) {
+        hz_to_freq(offset_khz * 1000, ch->offset);
+    } else if (offset_khz < 0 && -offset_khz < 100000) {
         ch->duplex = D_NEG_OFFSET;
-        hz_to_freq((int) (-offset_mhz * 1000000.0), ch->offset);
+        hz_to_freq(-offset_khz * 1000, ch->offset);
     } else {
         ch->duplex = D_CROSS_BAND;
-        hz_to_freq((int) (tx_mhz * 1000000.0), ch->offset);
+        hz_to_freq((int) (tx_mhz * 1000000 + 0.5), ch->offset);
     }
     ch->tmode = tmode;
     ch->tone = tone;
@@ -830,31 +887,13 @@ static void print_squelch(FILE *out, int ctcs, int dcs)
 }
 
 //
-// Print the list of channel banks.
-//
-static char *format_banks(int mask)
-{
-    static char buf [16];
-    char *p;
-    int b;
-
-    p = buf;
-    for (b=0; b<10; b++) {
-        if ((mask >> b) & 1)
-            *p++ = "1234567890" [b];
-    }
-    if (p == buf)
-        *p++ = '-';
-    *p = 0;
-    return buf;
-}
-
-//
 // Print full information about the device configuration.
 //
 static void vx2_print_config(FILE *out, int verbose)
 {
     int i;
+
+    fprintf(out, "Radio: Yaesu VX-2\n");
 
     //
     // Memory channels.
@@ -871,17 +910,16 @@ static void vx2_print_config(FILE *out, int verbose)
         fprintf(out, "# 7) Transmit power: High, Low\n");
         fprintf(out, "# 8) Modulation: FM, AM, WFM, NFM, Auto\n");
         fprintf(out, "# 9) Scan mode: +, -, Only\n");
-        fprintf(out, "# 10) List of banks 0..9, or '-' to disable\n");
         fprintf(out, "#\n");
     }
-    fprintf(out, "Channel Name    Receive  Transmit R-Squel T-Squel Power Modulation Scan Banks\n");
+    fprintf(out, "Channel Name    Receive  Transmit R-Squel T-Squel Power Modulation Scan\n");
     for (i=0; i<NCHAN; i++) {
         int rx_hz, tx_hz, rx_ctcs, tx_ctcs, rx_dcs, tx_dcs;
-        int power, scan, amfm, step, banks;
+        int power, scan, amfm, step;
         char name[17];
 
         decode_channel(i, OFFSET_CHANNELS, name, &rx_hz, &tx_hz, &rx_ctcs, &tx_ctcs,
-            &rx_dcs, &tx_dcs, &power, &scan, &amfm, &step, &banks);
+            &rx_dcs, &tx_dcs, &power, &scan, &amfm, &step);
         if (rx_hz == 0) {
             // Channel is disabled
             continue;
@@ -894,8 +932,8 @@ static void vx2_print_config(FILE *out, int verbose)
         fprintf(out, "   ");
         print_squelch(out, tx_ctcs, tx_dcs);
 
-        fprintf(out, "   %-4s  %-10s %-4s %s\n", POWER_NAME[power],
-            MOD_NAME[amfm], SCAN_NAME[scan], format_banks(banks));
+        fprintf(out, "   %-4s  %-10s %s\n", POWER_NAME[power],
+            MOD_NAME[amfm], SCAN_NAME[scan]);
     }
     if (verbose)
         print_squelch_tones(out, 1);
@@ -921,15 +959,16 @@ static void vx2_print_config(FILE *out, int verbose)
         int rx_hz, tx_hz, rx_ctcs, tx_ctcs, rx_dcs, tx_dcs;
         int power, scan, amfm, step;
         int can_transmit = (i == 6) || (i == 9);
+        int band = (i < 4) ? i+1 : i;
 
         if (i == 4) {
-            // Skip home channel #5.
+            // Skip home channel index #4.
             continue;
         }
         decode_channel(i, OFFSET_HOME, 0, &rx_hz, &tx_hz, &rx_ctcs, &tx_ctcs,
-            &rx_dcs, &tx_dcs, &power, &scan, &amfm, &step, 0);
+            &rx_dcs, &tx_dcs, &power, &scan, &amfm, &step);
 
-        fprintf(out, "%4d   %8.3f  ", (i < 4) ? i+1 : i, rx_hz / 1000000.0);
+        fprintf(out, "%4d   %8.3f  ", band, rx_hz / 1000000.0);
         print_offset(out, rx_hz, tx_hz);
         fprintf(out, " ");
         print_squelch(out, rx_ctcs, rx_dcs);
@@ -957,9 +996,9 @@ static void vx2_print_config(FILE *out, int verbose)
         int power, scan, amfm, step;
 
         decode_channel(i*2, OFFSET_PMS, 0, &lower_hz, &tx_hz, &rx_ctcs, &tx_ctcs,
-            &rx_dcs, &tx_dcs, &power, &scan, &amfm, &step, 0);
+            &rx_dcs, &tx_dcs, &power, &scan, &amfm, &step);
         decode_channel(i*2+1, OFFSET_PMS, 0, &upper_hz, &tx_hz, &rx_ctcs, &tx_ctcs,
-            &rx_dcs, &tx_dcs, &power, &scan, &amfm, &step, 0);
+            &rx_dcs, &tx_dcs, &power, &scan, &amfm, &step);
         if (lower_hz == 0 && upper_hz == 0)
             continue;
 
@@ -988,7 +1027,7 @@ static void vx2_print_config(FILE *out, int verbose)
                                            "20.0", "25.0", "50.0", "100.0" };
 
         decode_channel(i, OFFSET_VFO, 0, &rx_hz, &tx_hz, &rx_ctcs, &tx_ctcs,
-            &rx_dcs, &tx_dcs, &power, &scan, &amfm, &step, 0);
+            &rx_dcs, &tx_dcs, &power, &scan, &amfm, &step);
 
         fprintf(out, "%5s   %8.3f  ", BAND_NAME[i], rx_hz / 1000000.0);
         print_offset(out, rx_hz, tx_hz);
@@ -1042,33 +1081,11 @@ static void vx2_parse_parameter(char *param, char *value)
 //
 // Check that the radio does support this frequency.
 //
-static int is_valid_frequency(int mhz)
+static int is_valid_frequency(double mhz)
 {
-    if (mhz >= 108 && mhz <= 520)
-        return 1;
-    if (mhz >= 700 && mhz <= 999)
+    if (mhz >= 0.5 && mhz <= 999)
         return 1;
     return 0;
-}
-
-//
-// Parse the 'banks' parameter value.
-//
-static int encode_banks(char *str)
-{
-    int mask;
-
-    if (*str == '-')
-        return 0;
-
-    for (mask=0; *str; str++) {
-        if (*str < '0' || *str > '9') {
-            fprintf(stderr, "Bad banks mask = '%s'\n", str);
-            exit(-1);
-        }
-        mask |= 1 << (*str - '0');
-    }
-    return mask;
 }
 
 //
@@ -1080,14 +1097,16 @@ static int parse_channel(int first_row, char *line)
 {
     char num_str[256], name_str[256], rxfreq_str[256], offset_str[256];
     char rq_str[256], tq_str[256], power_str[256], mod_str[256];
-    char scan_str[256], banks_str[256];
-    int num, tmode, tone, dcs, power, scan, amfm, banks;
+    char scan_str[256];
+    int num, tmode, tone, dcs, power, scan, amfm;
     double rx_mhz, tx_mhz;
 
-    if (sscanf(line, "%s %s %s %s %s %s %s %s %s %s",
-        num_str, name_str, rxfreq_str, offset_str, rq_str, tq_str, power_str,
-        mod_str, scan_str, banks_str) != 10)
+    if (sscanf(line, "%s %s %s %s %s %s %s %s %s",
+        num_str, name_str, rxfreq_str, offset_str, rq_str, tq_str,
+        power_str, mod_str, scan_str) != 9) {
+        fprintf(stderr, "Wrong number of fields.\n");
         return 0;
+    }
 
     num = atoi(num_str);
     if (num < 1 || num > NCHAN) {
@@ -1100,23 +1119,25 @@ static int parse_channel(int first_row, char *line)
         fprintf(stderr, "Bad receive frequency.\n");
         return 0;
     }
-    if (sscanf(offset_str, "%lf", &tx_mhz) != 1) {
-badtx:  fprintf(stderr, "Bad transmit frequency.\n");
-        return 0;
+    if (offset_str[0] == '-' && offset_str[1] == 0) {
+        tx_mhz = 0;
+    } else {
+        if (sscanf(offset_str, "%lf", &tx_mhz) != 1) {
+badtx:      fprintf(stderr, "Bad transmit frequency.\n");
+            return 0;
+        }
+        if (offset_str[0] == '-' || offset_str[0] == '+')
+            tx_mhz += rx_mhz;
+        if (! is_valid_frequency(tx_mhz))
+            goto badtx;
     }
-    if (offset_str[0] == '-' || offset_str[0] == '+')
-        tx_mhz += rx_mhz;
-    if (! is_valid_frequency(tx_mhz))
-        goto badtx;
-
     tmode = encode_squelch(rq_str, tq_str, &tone, &dcs);
 
     if (strcasecmp("High", power_str) == 0) {
-        power = 0;
-    } else if (strcasecmp("Mid", power_str) == 0) {
-        power = 1;
-    } else if (strcasecmp("Low", power_str) == 0) {
-        power = 2;
+        power = PWR_HIGH;
+    } else if (strcasecmp("Low", power_str) == 0 ||
+               strcasecmp("-", power_str) == 0) {
+        power = PWR_LOW;
     } else {
         fprintf(stderr, "Bad power level.\n");
         return 0;
@@ -1148,18 +1169,16 @@ badtx:  fprintf(stderr, "Bad transmit frequency.\n");
         return 0;
     }
 
-    banks = encode_banks(banks_str);
-
     if (first_row) {
         // On first entry, erase the channel table.
         int i;
         for (i=0; i<NCHAN; i++) {
-            setup_channel(i, 0, 0, 0, 0, TONE_DEFAULT, 0, 0, 1, 0, 0);
+            setup_channel(i, 0, 0, 0, 0, TONE_DEFAULT, 0, 0, 1, 0);
         }
     }
 
     setup_channel(num-1, name_str, rx_mhz, tx_mhz,
-        tmode, tone, dcs, power, scan, amfm, banks);
+        tmode, tone, dcs, power, scan, amfm);
     return 1;
 }
 
@@ -1180,8 +1199,7 @@ static int parse_home(int first_row, char *line)
         return 0;
 
     band = atoi(band_str);
-    if (band != 144 && band != 250 && band != 350 &&
-        band != 430 && band != 850) {
+    if (band < 1 || band > 11) {
         fprintf(stderr, "Incorrect band.\n");
         return 0;
     }
@@ -1191,23 +1209,25 @@ static int parse_home(int first_row, char *line)
         fprintf(stderr, "Bad receive frequency.\n");
         return 0;
     }
-    if (sscanf(offset_str, "%lf", &tx_mhz) != 1) {
-badtx:  fprintf(stderr, "Bad transmit frequency.\n");
-        return 0;
+    if (offset_str[0] == '-' && offset_str[1] == 0) {
+        tx_mhz = 0;
+    } else {
+        if (sscanf(offset_str, "%lf", &tx_mhz) != 1) {
+badtx:      fprintf(stderr, "Bad transmit frequency.\n");
+            return 0;
+        }
+        if (offset_str[0] == '-' || offset_str[0] == '+')
+            tx_mhz += rx_mhz;
+        if (! is_valid_frequency(tx_mhz))
+            goto badtx;
     }
-    if (offset_str[0] == '-' || offset_str[0] == '+')
-        tx_mhz += rx_mhz;
-    if (! is_valid_frequency(tx_mhz))
-        goto badtx;
-
     tmode = encode_squelch(rq_str, tq_str, &tone, &dcs);
 
     if (strcasecmp("High", power_str) == 0) {
-        power = 0;
-    } else if (strcasecmp("Mid", power_str) == 0) {
-        power = 1;
-    } else if (strcasecmp("Low", power_str) == 0) {
-        power = 2;
+        power = PWR_HIGH;
+    } else if (strcasecmp("Low", power_str) == 0 ||
+               strcasecmp("-", power_str) == 0) {
+        power = PWR_LOW;
     } else {
         fprintf(stderr, "Bad power level.\n");
         return 0;
