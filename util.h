@@ -29,7 +29,7 @@
 //
 // Localization.
 //
-#if 1
+#if 0
 #include <libintl.h>
 #define _(str)              gettext(str)
 #else

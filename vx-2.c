@@ -42,9 +42,14 @@
 #define OFFSET_HOME     0x03d2  // 12 home channels
 #define OFFSET_VFO      0x04e2  // 12 variable frequency channels
 #define OFFSET_BANKS    0x05c2  // 20 banks by 100 channels
+#define OFFSET_FLAGS    0x1562  // 500 bytes: four bits per channel
 #define OFFSET_CHANNELS 0x17c2  // 1000 memory channels
-#define OFFSET_PMS      0x5e12  // 50 programmable memory scan channel pairs
-#define OFFSET_SCAN     0x6ec8  // TODO
+#define OFFSET_PMS      0x5e12  // 50 channel pairs: programmable memory scan
+
+#define FLAG_MASKED     1
+#define FLAG_VALID      2
+#define FLAG_SKIP       4
+#define FLAG_PSKIP      8
 
 static const char CHARSET[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ !`o$%&'()*+,-./|;/=>?@[~]^__";
 #define NCHARS  65
@@ -647,22 +652,40 @@ static void encode_name(uint8_t *internal, char *name)
 {
     int n;
 
-    if (name && *name) {
-        // Setup channel name.
-        if (*name == '-')
-            name = "      ";
-        for (n=0; n<6 && name[n]; n++) {
-            internal[n] = encode_char(name[n]);
-        }
-        for (; n<6; n++) {
-            internal[n] = SPACE;
-        }
-    } else {
-        // Clear name.
-        for (n=0; n<6; n++) {
-            internal[n] = 0xff;
-        }
+    if (!name || !*name || *name == '-')
+        name = "      ";
+
+    // Setup channel name.
+    for (n=0; n<6 && name[n]; n++) {
+        internal[n] = encode_char(name[n]);
     }
+    for (; n<6; n++) {
+        internal[n] = SPACE;
+    }
+}
+
+//
+// Get channel flags.
+//
+static int get_flags(int i)
+{
+    int flags = radio_mem[OFFSET_FLAGS + i/2];
+
+    if (i & 1)
+        flags >>= 4;
+    return flags & 0xf;
+}
+
+//
+// Set channel flags.
+//
+static void set_flags(int i, int flags)
+{
+    unsigned char *ptr = &radio_mem[OFFSET_FLAGS + i/2];
+    int shift = (i & 1) * 4;
+
+    *ptr &= ~(0xf << shift);
+    *ptr |= (FLAG_VALID | FLAG_MASKED) << shift;
 }
 
 //
@@ -679,14 +702,17 @@ static void decode_channel(int i, int seek, char *name,
     int *scan, int *amfm, int *step)
 {
     memory_channel_t *ch = i + (memory_channel_t*) &radio_mem[seek];
-    //TODO: int scan_data = radio_mem[OFFSET_SCAN + i/4];
+    int flags = get_flags(i + (seek == OFFSET_PMS ? NCHAN : 0));
 
     *rx_hz = *tx_hz = *rx_ctcs = *tx_ctcs = *rx_dcs = *tx_dcs = 0;
     *power = *scan = *amfm = *step = 0;
     if (name)
         *name = 0;
-    if (ch->rxfreq[0] == 0xff && (seek == OFFSET_CHANNELS || seek == OFFSET_PMS))
-        return;
+    if (seek == OFFSET_CHANNELS || seek == OFFSET_PMS) {
+        // Check flags.
+        if (! (flags & FLAG_VALID))
+            return;
+    }
 
     // Extract channel name.
     if (name && seek == OFFSET_CHANNELS)
@@ -725,7 +751,7 @@ static void decode_channel(int i, int seek, char *name,
 
     // Other parameters.
     *power = ch->power;
-    *scan = 0 /*TODO: (scan_data << ((i & 3) * 2) >> 6) & 3*/;
+    *scan = 0 /*TODO*/;
     *amfm = ch->isnarrow ? MOD_NFM : ch->amfm;
     *step = ch->step;
 }
@@ -768,16 +794,11 @@ static void setup_channel(int i, char *name, double rx_mhz, double tx_mhz,
     ch->_u3 = 0;
     ch->_u4 = 0;
     ch->_u5 = 0;
-    ch->_u6 = (rx_mhz > 0) ? 0 : 0x0d;
-    encode_name(ch->name, (rx_mhz > 0) ? name : 0);
-#if 0
-    // Scan mode.
-    //TODO
-    unsigned char *scan_data = &radio_mem[OFFSET_SCAN + i/4];
-    int scan_shift = (i & 3) * 2;
-    *scan_data &= ~(3 << scan_shift);
-    *scan_data |= scan << scan_shift;
-#endif
+    ch->_u6 = 0;
+    encode_name(ch->name, name);
+    set_flags(i, FLAG_VALID | FLAG_MASKED);
+
+    //TODO: scan
 }
 
 //
@@ -824,26 +845,38 @@ static void setup_home(int band, double rx_mhz, double tx_mhz,
     ch->_u3 = 0;
     ch->_u4 = 0;
     ch->_u5 = 0;
-    ch->_u6 = (rx_mhz > 0) ? 0 : 0x0d;
-    encode_name(ch->name, (rx_mhz > 0) ? "      " : 0);
+    ch->_u6 = 0;
+    encode_name(ch->name, "      ");
 }
 
 //
 // Set the parameters for a given PMS pair.
 //
-static void setup_pms(int i, double lower_mhz, double upper_mhz)
+static void setup_pms(int i, double mhz)
 {
-    memory_channel_t *ch = i*2 + (memory_channel_t*) &radio_mem[OFFSET_PMS];
+    memory_channel_t *ch = i + (memory_channel_t*) &radio_mem[OFFSET_PMS];
 
-    if (! lower_mhz) {
-        encode_name(ch[0].name, 0);
-        encode_name(ch[1].name, 0);
-        return;
-    }
-    hz_to_freq((int) (lower_mhz * 1000000.0), ch[0].rxfreq);
-    hz_to_freq((int) (upper_mhz * 1000000.0), ch[1].rxfreq);
-    encode_name(ch[0].name, "      ");
-    encode_name(ch[1].name, "      ");
+    hz_to_freq((int) (mhz * 1000000.0), ch->rxfreq);
+
+    ch->offset[0] = ch->offset[1] = ch->offset[2] = 0;
+    ch->duplex = D_SIMPLEX;
+    ch->tmode = 0;
+    ch->tone = 0;
+    ch->dcs = 0;
+    ch->power = 0;
+    ch->isnarrow = 0;
+    ch->amfm = 0;
+    ch->step = STEP_12_5;
+    ch->clk = 0;
+    ch->_u1 = 5;
+    ch->_u2 = 0;
+    ch->_u3 = 0;
+    ch->_u4 = 0;
+    ch->_u5 = 0;
+    ch->_u6 = 0;
+    encode_name(ch->name, "      ");
+
+    set_flags(NCHAN + i, FLAG_VALID | FLAG_MASKED);
 }
 
 //
@@ -939,6 +972,35 @@ static void vx2_print_config(FILE *out, int verbose)
         print_squelch_tones(out, 1);
 
     //
+    // VFO channels.
+    //
+    fprintf(out, "\n");
+    fprintf(out, "VFO     Receive  Transmit R-Squel T-Squel Step  Power Modulation\n");
+    for (i=0; i<12; i++) {
+        int rx_hz, tx_hz, rx_ctcs, tx_ctcs, rx_dcs, tx_dcs;
+        int power, scan, amfm, step;
+        int can_transmit = (i == 6) || (i == 9);
+        int band = (i < 4) ? i+1 : i;
+
+        if (i == 4) {
+            // Skip home channel index #4.
+            continue;
+        }
+        decode_channel(i, OFFSET_VFO, 0, &rx_hz, &tx_hz, &rx_ctcs, &tx_ctcs,
+            &rx_dcs, &tx_dcs, &power, &scan, &amfm, &step);
+
+        fprintf(out, "%4d   %8.3f  ", band, rx_hz / 1000000.0);
+        print_offset(out, rx_hz, tx_hz);
+        fprintf(out, " ");
+        print_squelch(out, rx_ctcs, rx_dcs);
+        fprintf(out, "   ");
+        print_squelch(out, tx_ctcs, tx_dcs);
+
+        fprintf(out, "   %-5s %-4s  %s\n", STEP_NAME[step],
+            can_transmit ? POWER_NAME[power] : "-", MOD_NAME[amfm]);
+    }
+
+    //
     // Home channels.
     //
     fprintf(out, "\n");
@@ -954,7 +1016,7 @@ static void vx2_print_config(FILE *out, int verbose)
         fprintf(out, "# 8) Frequency dial step in KHz: 5, 9, 10, 12.5, 15, 20, 25, 50, 100\n");
         fprintf(out, "#\n");
     }
-    fprintf(out, "Home    Receive  Transmit R-Squel T-Squel Power Mod   Step\n");
+    fprintf(out, "Home    Receive  Transmit R-Squel T-Squel Step  Power Modulation\n");
     for (i=0; i<12; i++) {
         int rx_hz, tx_hz, rx_ctcs, tx_ctcs, rx_dcs, tx_dcs;
         int power, scan, amfm, step;
@@ -975,8 +1037,8 @@ static void vx2_print_config(FILE *out, int verbose)
         fprintf(out, "   ");
         print_squelch(out, tx_ctcs, tx_dcs);
 
-        fprintf(out, "   %-4s  %-4s  %s\n", can_transmit ? POWER_NAME[power] : "-",
-            MOD_NAME[amfm], STEP_NAME[step]);
+        fprintf(out, "   %-5s %-4s  %s\n", STEP_NAME[step],
+            can_transmit ? POWER_NAME[power] : "-", MOD_NAME[amfm]);
     }
 
     //
@@ -1012,34 +1074,6 @@ static void vx2_print_config(FILE *out, int verbose)
         else
             fprintf(out, " %8.4f\n", upper_hz / 1000000.0);
     }
-
-    //
-    // VFO channels.
-    // Not much sense to store this to the configuration file.
-    //
-#if 0
-    fprintf(out, "\n");
-    fprintf(out, "VFO     Receive  Transmit R-Squel T-Squel Step  Power Modulation\n");
-    for (i=0; i<5; i++) {
-        int rx_hz, tx_hz, rx_ctcs, tx_ctcs, rx_dcs, tx_dcs;
-        int power, scan, amfm, step;
-        static const char *STEP_NAME[] = { "5.0", "10.0", "12.5", "15.0",
-                                           "20.0", "25.0", "50.0", "100.0" };
-
-        decode_channel(i, OFFSET_VFO, 0, &rx_hz, &tx_hz, &rx_ctcs, &tx_ctcs,
-            &rx_dcs, &tx_dcs, &power, &scan, &amfm, &step);
-
-        fprintf(out, "%5s   %8.3f  ", BAND_NAME[i], rx_hz / 1000000.0);
-        print_offset(out, rx_hz, tx_hz);
-        fprintf(out, " ");
-        print_squelch(out, rx_ctcs, rx_dcs);
-        fprintf(out, "   ");
-        print_squelch(out, tx_ctcs, tx_dcs);
-
-        fprintf(out, "   %-5s %-4s  %s\n",
-            STEP_NAME[step], POWER_NAME[power], MOD_NAME[amfm]);
-    }
-#endif
 }
 
 //
@@ -1171,10 +1205,8 @@ badtx:      fprintf(stderr, "Bad transmit frequency.\n");
 
     if (first_row) {
         // On first entry, erase the channel table.
-        int i;
-        for (i=0; i<NCHAN; i++) {
-            setup_channel(i, 0, 0, 0, 0, TONE_DEFAULT, 0, 0, 1, 0);
-        }
+        memset(&radio_mem[OFFSET_CHANNELS], 0xff, NCHAN * sizeof(memory_channel_t));
+        memset(&radio_mem[OFFSET_FLAGS], 0, NCHAN/2);
     }
 
     setup_channel(num-1, name_str, rx_mhz, tx_mhz,
@@ -1306,12 +1338,11 @@ static int parse_pms(int first_row, char *line)
 
     if (first_row) {
         // On first entry, erase the PMS table.
-        int i;
-        for (i=0; i<NPMS; i++) {
-            setup_pms(i, 0, 0);
-        }
+        memset(&radio_mem[OFFSET_PMS], 0xff, NPMS * 2 * sizeof(memory_channel_t));
+        memset(&radio_mem[OFFSET_FLAGS] + NCHAN/2, 0, NPMS);
     }
-    setup_pms(num-1, lower_mhz, upper_mhz);
+    setup_pms(num*2 - 2, lower_mhz);
+    setup_pms(num*2 - 1, upper_mhz);
     return 1;
 }
 
