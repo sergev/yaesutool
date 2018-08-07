@@ -46,16 +46,10 @@
 #define OFFSET_CHANNELS 0x17c2  // 1000 memory channels
 #define OFFSET_PMS      0x5e12  // 50 channel pairs: programmable memory scan
 
-#define FLAG_MASKED     1
-#define FLAG_VALID      2
-#define FLAG_SKIP       4
-#define FLAG_PSKIP      8
+static const char CHARSET[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ +-/[]";
 
-static const char CHARSET[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ +-/ [](){}  _             *  ,'|";
-
-#define NCHARS  65
+#define NCHARS  42
 #define SPACE   36
-#define OPENBOX 64
 
 static const char *POWER_NAME[] = { "High", "Low", "High", "Low" };
 
@@ -65,16 +59,39 @@ static const char *MOD_NAME[] = { "FM", "AM", "WFM", "Auto", "NFM" };
 
 static const char *STEP_NAME[] = { "5", "10", "12.5", "15", "20", "25", "50", "100", "9" };
 
+//
+// Tuning frequency step, for VFO and Home channels.
+//
 enum {
-    STEP_5 = 0,
-    STEP_10,
-    STEP_12_5,
-    STEP_15,
-    STEP_20,
-    STEP_25,
-    STEP_50,
-    STEP_100,
-    STEP_9,
+    STEP_5 = 0,         // 5 kHz
+    STEP_10,            // 10 kHz
+    STEP_12_5,          // 12.5 kHz
+    STEP_15,            // 15 kHz
+    STEP_20,            // 20 kHz
+    STEP_25,            // 25 kHz
+    STEP_50,            // 50 kHz
+    STEP_100,           // 100 kHz
+    STEP_9,             // 9 kHz, for MW band
+};
+
+//
+// Channels flags.
+// Stored in a separate memory, 4 bits per channel, total 500 bytes.
+//
+enum {
+    FLAG_UNMASKED = 1,  // Unmasked, see 'Masking Memories' in the Operating manual
+    FLAG_VALID    = 2,  // Channel contains valid data
+    FLAG_SKIP     = 4,  // Skip this channel during Memory Scan
+    FLAG_PSKIP    = 8,  // Skip=Only, for Preferential Memory Scan
+};
+
+//
+// Scan flags.
+//
+enum {
+    SCAN_NORMAL = 0,    // Normal scan, Skip=Off
+    SCAN_SKIP,          // Skip this channel
+    SCAN_PREFERENTIAL,  // Preferential scan, Skip=Only
 };
 
 //
@@ -372,9 +389,8 @@ again:
 
     if (! write_block(radio_port, 0, &radio_mem[0], 10)) {
 error:  fprintf(stderr, "\nPlease, repeat the procedure:\n");
-        fprintf(stderr, "1. Briefly press the [F/W] key to clear the ERROR status.\n");
-        fprintf(stderr, "2. Press the MONI switch until the radio starts to receive.\n");
-        fprintf(stderr, "3. Press <Enter> to continue.\n");
+        fprintf(stderr, "1. Press the V/M key until the radio starts to receive.\n");
+        fprintf(stderr, "2. Press <Enter> to continue.\n");
         fprintf(stderr, "-- Or enter ^C to abort the memory write.\n");
         goto again;
     }
@@ -643,7 +659,7 @@ static int encode_char(int c)
     for (i=0; i<NCHARS; i++)
         if (c == CHARSET[i])
             return i;
-    return OPENBOX;
+    return SPACE;
 }
 
 //
@@ -691,7 +707,7 @@ static void set_flags(int i, int flags)
     int shift = (i & 1) * 4;
 
     *ptr &= ~(0xf << shift);
-    *ptr |= (FLAG_VALID | FLAG_MASKED) << shift;
+    *ptr |= flags << shift;
 }
 
 //
@@ -757,7 +773,9 @@ static void decode_channel(int i, int seek, char *name,
 
     // Other parameters.
     *power = ch->power;
-    *scan = 0 /*TODO*/;
+    *scan = (flags & FLAG_PSKIP) ? SCAN_PREFERENTIAL :
+            (flags & FLAG_SKIP)  ? SCAN_SKIP :
+                                   SCAN_NORMAL;
     *amfm = ch->isnarrow ? MOD_NFM : ch->amfm;
     *step = ch->step;
 }
@@ -769,6 +787,7 @@ static void setup_channel(int i, char *name, double rx_mhz, double tx_mhz,
     int tmode, int tone, int dcs, int power, int scan, int amfm)
 {
     memory_channel_t *ch = i + (memory_channel_t*) &radio_mem[OFFSET_CHANNELS];
+    int flags = FLAG_VALID | FLAG_UNMASKED;
 
     hz_to_freq(iround(rx_mhz * 1000000.0), ch->rxfreq);
 
@@ -802,9 +821,12 @@ static void setup_channel(int i, char *name, double rx_mhz, double tx_mhz,
     ch->_u5 = 0;
     ch->_u6 = 0;
     encode_name(ch->name, name);
-    set_flags(i, FLAG_VALID | FLAG_MASKED);
 
-    //TODO: scan
+    switch (scan) {
+    case SCAN_SKIP:         flags |= FLAG_SKIP;  break;
+    case SCAN_PREFERENTIAL: flags |= FLAG_PSKIP; break;
+    }
+    set_flags(i, flags);
 }
 
 //
@@ -882,7 +904,7 @@ static void setup_pms(int i, double mhz)
     ch->_u6 = 0;
     encode_name(ch->name, "      ");
 
-    set_flags(NCHAN + i, FLAG_VALID | FLAG_MASKED);
+    set_flags(NCHAN + i, FLAG_VALID | FLAG_UNMASKED);
 }
 
 //
@@ -1199,11 +1221,11 @@ badtx:      fprintf(stderr, "Bad transmit frequency.\n");
     }
 
     if (*scan_str == '+') {
-        scan = 0;
+        scan = SCAN_NORMAL;
     } else if (*scan_str == '-') {
-        scan = 1;
+        scan = SCAN_SKIP;
     } else if (strcasecmp("Only", scan_str) == 0) {
-        scan = 2;
+        scan = SCAN_PREFERENTIAL;
     } else {
         fprintf(stderr, "Bad scan flag.\n");
         return 0;
