@@ -608,10 +608,10 @@ static int encode_banks(char *str)
 //
 static void decode_name(uint8_t *internal, char *name)
 {
-    if (internal[0] < NCHARS) {
+    if ((internal[0] & 0x7f) < NCHARS) {
         int n, c;
         for (n=0; n<6; n++) {
-            c = internal[n];
+            c = internal[n] & 0x7f;
             name[n] = (c < NCHARS) ? CHARSET[c] : ' ';
 
             // Replace spaces by underscore.
@@ -661,6 +661,11 @@ static void encode_name(uint8_t *internal, char *name)
     }
     for (; n<6; n++) {
         internal[n] = SPACE;
+    }
+
+    if (internal[0] != SPACE) {
+        // Display name.
+        internal[0] |= 0x80;
     }
 }
 
@@ -764,7 +769,7 @@ static void setup_channel(int i, char *name, double rx_mhz, double tx_mhz,
 {
     memory_channel_t *ch = i + (memory_channel_t*) &radio_mem[OFFSET_CHANNELS];
 
-    hz_to_freq((int) (rx_mhz * 1000000.0), ch->rxfreq);
+    hz_to_freq((int) (rx_mhz * 1000000.0 + 0.5), ch->rxfreq);
 
     int offset_khz = iround((tx_mhz - rx_mhz) * 1000);
     ch->offset[0] = ch->offset[1] = ch->offset[2] = 0;
