@@ -51,7 +51,8 @@
 #define FLAG_SKIP       4
 #define FLAG_PSKIP      8
 
-static const char CHARSET[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ !`o$%&'()*+,-./|;/=>?@[~]^__";
+static const char CHARSET[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ +-/ [](){}  _             *  ,'|";
+
 #define NCHARS  65
 #define SPACE   36
 #define OPENBOX 64
@@ -399,6 +400,17 @@ static int vx2_is_compatible()
 }
 
 //
+// Round double value to integer.
+//
+static int iround(double x)
+{
+    if (x >= 0)
+        return (int)(x + 0.5);
+
+    return -(int)(-x + 0.5);
+}
+
+//
 // Convert squelch string to CTCSS tone index.
 // Return -1 on error.
 // Format: nnn.n
@@ -413,7 +425,7 @@ static int encode_tone(char *str)
         return -1;
 
     // Round to integer.
-    val = hz * 10.0 + 0.5;
+    val = iround(hz * 10.0);
     if (val < 0x0258)
         return -1;
 
@@ -515,17 +527,6 @@ static void hz_to_freq(int hz, uint8_t *bcd)
              (hz / 100000    % 10);
     bcd[2] = (hz / 10000     % 10) << 4 |
              (hz / 1000      % 10);
-}
-
-//
-// Round double value to integer.
-//
-static int iround(double x)
-{
-    if (x >= 0)
-        return (int)(x + 0.5);
-
-    return -(int)(-x + 0.5);
 }
 
 #if 0 // TODO
@@ -769,9 +770,9 @@ static void setup_channel(int i, char *name, double rx_mhz, double tx_mhz,
 {
     memory_channel_t *ch = i + (memory_channel_t*) &radio_mem[OFFSET_CHANNELS];
 
-    hz_to_freq((int) (rx_mhz * 1000000.0 + 0.5), ch->rxfreq);
+    hz_to_freq(iround(rx_mhz * 1000000.0), ch->rxfreq);
 
-    int offset_khz = iround((tx_mhz - rx_mhz) * 1000);
+    int offset_khz = iround((tx_mhz - rx_mhz) * 1000.0);
     ch->offset[0] = ch->offset[1] = ch->offset[2] = 0;
     if (offset_khz == 0) {
         ch->duplex = D_SIMPLEX;
@@ -783,7 +784,7 @@ static void setup_channel(int i, char *name, double rx_mhz, double tx_mhz,
         hz_to_freq(-offset_khz * 1000, ch->offset);
     } else {
         ch->duplex = D_CROSS_BAND;
-        hz_to_freq((int) (tx_mhz * 1000000 + 0.5), ch->offset);
+        hz_to_freq(iround(tx_mhz * 1000000.0), ch->offset);
     }
     ch->tmode = tmode;
     ch->tone = tone;
@@ -820,9 +821,9 @@ static void setup_home(int band, double rx_mhz, double tx_mhz,
     int index = (band <= 4) ? band-1 : band;
     memory_channel_t *ch = index + (memory_channel_t*) &radio_mem[OFFSET_HOME];
 
-    hz_to_freq((int) (rx_mhz * 1000000.0), ch->rxfreq);
+    hz_to_freq(iround(rx_mhz * 1000000.0), ch->rxfreq);
 
-    int offset_khz = iround((tx_mhz - rx_mhz) * 1000);
+    int offset_khz = iround((tx_mhz - rx_mhz) * 1000.0);
     ch->offset[0] = ch->offset[1] = ch->offset[2] = 0;
     if (offset_khz == 0) {
         ch->duplex = D_SIMPLEX;
@@ -834,7 +835,7 @@ static void setup_home(int band, double rx_mhz, double tx_mhz,
         hz_to_freq(-offset_khz * 1000, ch->offset);
     } else {
         ch->duplex = D_CROSS_BAND;
-        hz_to_freq((int) (tx_mhz * 1000000 + 0.5), ch->offset);
+        hz_to_freq(iround(tx_mhz * 1000000.0), ch->offset);
     }
     ch->tmode = tmode;
     ch->tone = tone;
