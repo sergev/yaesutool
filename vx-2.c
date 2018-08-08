@@ -392,6 +392,9 @@ error:  fprintf(stderr, "\nPlease, repeat the procedure:\n");
     if (! write_block(radio_port, 10, &radio_mem[10], 8))
         goto error;
 
+    // Quick hack, to mimick VX2 Commander.
+    radio_mem[0x91] = 0xb2;
+
     // Compute the checksum.
     sum = 0;
     for (addr=0; addr<MEMSZ; addr++)
