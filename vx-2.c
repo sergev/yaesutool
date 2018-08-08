@@ -30,6 +30,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <stdint.h>
+#include <sys/ioctl.h>
 #include "radio.h"
 #include "util.h"
 
@@ -107,7 +108,7 @@ typedef struct {
 #define D_SIMPLEX       0
 #define D_NEG_OFFSET    1
 #define D_POS_OFFSET    2
-#define D_CROSS_BAND    3
+#define D_DUPLEX        3
                 amfm      : 2;  // Modulation
 #define MOD_FM          0
 #define MOD_AM          1
@@ -280,20 +281,14 @@ again:
     return 1;
 }
 
-static void send_final_ack(int fd)
+static void clear_dtr(int fd)
 {
-    unsigned char reply;
+    // Clear DTR signal.
+    int modem_signals = TIOCM_DTR;
 
-    // Send acknowledge.
-    serial_write(fd, "\x06", 1);
-    if (serial_read(fd, &reply, 1) != 1) {
-        fprintf(stderr, "No final acknowledge.\n");
-        exit(-1);
-    }
-    if (reply != 0x06) {
-        fprintf(stderr, "Bad final acknowledge: %02x\n", reply);
-        exit(-1);
-    }
+    usleep(20000);
+    ioctl(fd, TIOCMBIC, &modem_signals);
+    usleep(200000);
 }
 
 //
@@ -348,7 +343,7 @@ again:
     if (serial_verbose)
         printf("Checksum = %02x (OK)\n", radio_mem[MEMSZ]);
 
-    send_final_ack(radio_port);
+    clear_dtr(radio_port);
 }
 
 //
@@ -405,6 +400,8 @@ error:  fprintf(stderr, "\nPlease, repeat the procedure:\n");
 
     if (! write_block(radio_port, 18, &radio_mem[18], MEMSZ - 18 + 1))
         goto error;
+
+    clear_dtr(radio_port);
 }
 
 //
@@ -684,6 +681,7 @@ static void encode_name(uint8_t *internal, char *name)
         // Display name.
         internal[0] |= 0x80;
     }
+//fprintf(stderr, "--- %s() name = '%s', bytes = %02x %02x %02x, offset = %#x\n", __func__, name, internal[0], internal[1], internal[2], internal - radio_mem);
 }
 
 //
@@ -751,7 +749,7 @@ static void decode_channel(int i, int seek, char *name,
     case D_POS_OFFSET:
         *tx_hz += freq_to_hz(ch->offset);
         break;
-    case D_CROSS_BAND:
+    case D_DUPLEX:
         *tx_hz = freq_to_hz(ch->offset);
         break;
     }
@@ -802,7 +800,7 @@ static void setup_channel(int i, char *name, double rx_mhz, double tx_mhz,
         ch->duplex = D_NEG_OFFSET;
         hz_to_freq(-offset_khz * 1000, ch->offset);
     } else {
-        ch->duplex = D_CROSS_BAND;
+        ch->duplex = D_DUPLEX;
         hz_to_freq(iround(tx_mhz * 1000000.0), ch->offset);
     }
     ch->tmode = tmode;
@@ -856,7 +854,7 @@ static void setup_home(int band, double rx_mhz, double tx_mhz,
         ch->duplex = D_NEG_OFFSET;
         hz_to_freq(-offset_khz * 1000, ch->offset);
     } else {
-        ch->duplex = D_CROSS_BAND;
+        ch->duplex = D_DUPLEX;
         hz_to_freq(iround(tx_mhz * 1000000.0), ch->offset);
     }
     ch->tmode = tmode;
@@ -1182,7 +1180,7 @@ static int parse_channel(int first_row, char *line)
         return 0;
     }
     if (offset_str[0] == '-' && offset_str[1] == 0) {
-        tx_mhz = 0;
+        tx_mhz = rx_mhz;
     } else {
         if (sscanf(offset_str, "%lf", &tx_mhz) != 1) {
 badtx:      fprintf(stderr, "Bad transmit frequency.\n");
@@ -1270,7 +1268,7 @@ static int parse_home(int first_row, char *line)
         return 0;
     }
     if (offset_str[0] == '-' && offset_str[1] == 0) {
-        tx_mhz = 0;
+        tx_mhz = rx_mhz;
     } else {
         if (sscanf(offset_str, "%lf", &tx_mhz) != 1) {
 badtx:      fprintf(stderr, "Bad transmit frequency.\n");
