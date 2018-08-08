@@ -276,6 +276,7 @@ again:
         start += nbytes;
         data += nbytes;
         datalen -= nbytes;
+        usleep(60000);
         goto again;
     }
     return 1;
@@ -389,11 +390,9 @@ error:  fprintf(stderr, "\nPlease, repeat the procedure:\n");
         fprintf(stderr, "-- Or enter ^C to abort the memory write.\n");
         goto again;
     }
+    usleep(500000);
     if (! write_block(radio_port, 10, &radio_mem[10], 8))
         goto error;
-
-    // Quick hack, to mimick VX2 Commander.
-    radio_mem[0x91] = 0xb2;
 
     // Compute the checksum.
     sum = 0;
@@ -401,6 +400,7 @@ error:  fprintf(stderr, "\nPlease, repeat the procedure:\n");
         sum += radio_mem[addr];
     radio_mem[MEMSZ] = sum;
 
+    usleep(500000);
     if (! write_block(radio_port, 18, &radio_mem[18], MEMSZ - 18 + 1))
         goto error;
 
