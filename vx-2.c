@@ -942,7 +942,12 @@ static void vx2_print_config(FILE *out, int verbose)
 {
     int i;
 
+    //
+    // Radio identification and hardware options.
+    //
     fprintf(out, "Radio: Yaesu VX-2\n");
+    fprintf(out, "Virtual Jumpers: %02x %02x %02x %02x\n",
+        radio_mem[6], radio_mem[7], radio_mem[8], radio_mem[13]);
 
     //
     // Memory channels.
@@ -1124,6 +1129,19 @@ static void vx2_parse_parameter(char *param, char *value)
         }
         return;
     }
+    if (strcasecmp("Virtual Jumpers", param) == 0) {
+        int a, b, c, d;
+        if (sscanf(value, "%x %x %x %x", &a, &b, &c, &d) != 4) {
+            fprintf(stderr, "Wrong value: %s = %s\n", param, value);
+            return;
+        }
+        radio_mem[10] = a;
+        radio_mem[11] = b;
+        radio_mem[12] = c;
+        radio_mem[13] = d;
+        return;
+    }
+
     fprintf(stderr, "Unknown parameter: %s = %s\n", param, value);
     exit(-1);
 }
@@ -1243,7 +1261,7 @@ static int parse_home(int first_row, char *line)
 
     if (sscanf(line, "%s %s %s %s %s %s %s %s",
         band_str, rxfreq_str, offset_str, rq_str, tq_str,
-        power_str, mod_str, step_str) != 8)
+        step_str, power_str, mod_str) != 8)
         return 0;
 
     band = atoi(band_str);
