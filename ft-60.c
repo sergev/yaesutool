@@ -989,7 +989,7 @@ static void ft60_read_image(FILE *img)
 //
 static void ft60_save_image(FILE *img)
 {
-    fwrite(&radio_mem[0], 1, MEMSZ, img);
+    fwrite(&radio_mem[0], 1, MEMSZ+1, img);
 }
 
 //

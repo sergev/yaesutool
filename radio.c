@@ -132,6 +132,7 @@ void radio_read_image(char *filename)
     }
     switch (st.st_size) {
     case 28616:
+    case 28617:
     case 31435:
         device = &radio_ft60;
         break;
