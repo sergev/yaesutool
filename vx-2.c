@@ -30,7 +30,6 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <stdint.h>
-#include <sys/ioctl.h>
 #include "radio.h"
 #include "util.h"
 
@@ -282,16 +281,6 @@ again:
     return 1;
 }
 
-static void clear_dtr(int fd)
-{
-    // Clear DTR signal.
-    int modem_signals = TIOCM_DTR;
-
-    usleep(20000);
-    ioctl(fd, TIOCMBIC, &modem_signals);
-    usleep(200000);
-}
-
 //
 // Read memory image from the device.
 //
@@ -343,8 +332,6 @@ again:
     }
     if (serial_verbose)
         printf("Checksum = %02x (OK)\n", radio_mem[MEMSZ]);
-
-    clear_dtr(radio_port);
 }
 
 //
@@ -404,7 +391,7 @@ error:  fprintf(stderr, "\nPlease, repeat the procedure:\n");
     if (! write_block(radio_port, 18, &radio_mem[18], MEMSZ - 18 + 1))
         goto error;
 
-    clear_dtr(radio_port);
+    usleep(200000);
 }
 
 //
