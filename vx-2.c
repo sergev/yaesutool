@@ -865,6 +865,47 @@ static void setup_home(int band, double rx_mhz, double tx_mhz,
     encode_name(ch->name, "      ");
 }
 
+static void setup_vfo(int band, double rx_mhz, double tx_mhz,
+    int tmode, int tone, int dcs, int power, int amfm, int step)
+{
+    // Skip home channel index #4.
+    int index = (band <= 4) ? band-1 : band;
+    memory_channel_t *ch = index + (memory_channel_t*) &radio_mem[OFFSET_VFO];
+
+    hz_to_freq(iround(rx_mhz * 1000000.0), ch->rxfreq);
+
+    int offset_khz = iround((tx_mhz - rx_mhz) * 1000.0);
+    ch->offset[0] = ch->offset[1] = ch->offset[2] = 0;
+    if (offset_khz == 0) {
+        ch->duplex = D_SIMPLEX;
+    } else if (offset_khz > 0 && offset_khz < 100000) {
+        ch->duplex = D_POS_OFFSET;
+        hz_to_freq(offset_khz * 1000, ch->offset);
+    } else if (offset_khz < 0 && -offset_khz < 100000) {
+        ch->duplex = D_NEG_OFFSET;
+        hz_to_freq(-offset_khz * 1000, ch->offset);
+    } else {
+        ch->duplex = D_DUPLEX;
+        hz_to_freq(iround(tx_mhz * 1000000.0), ch->offset);
+    }
+    ch->tmode = tmode;
+    ch->tone = tone;
+    ch->dcs = dcs;
+    ch->power = power;
+    ch->isnarrow = (amfm == MOD_NFM);
+    ch->amfm = amfm;
+    ch->step = step;
+    ch->clk = 0;
+    ch->_u1 = (rx_mhz < 1.8) ? 2 :
+              (rx_mhz < 88)  ? 0 : 5;
+    ch->_u2 = 0;
+    ch->_u3 = 0;
+    ch->_u4 = 0;
+    ch->_u5 = 0;
+    ch->_u6 = 0;
+    encode_name(ch->name, "      ");
+}
+
 //
 // Set the parameters for a given PMS pair.
 //
@@ -872,7 +913,7 @@ static void setup_pms(int i, double mhz)
 {
     memory_channel_t *ch = i + (memory_channel_t*) &radio_mem[OFFSET_PMS];
 
-    hz_to_freq((int) (mhz * 1000000.0), ch->rxfreq);
+    hz_to_freq(iround(mhz * 1000000.0), ch->rxfreq);
 
     ch->offset[0] = ch->offset[1] = ch->offset[2] = 0;
     ch->duplex = D_SIMPLEX;
@@ -996,6 +1037,18 @@ static void vx2_print_config(FILE *out, int verbose)
     // VFO channels.
     //
     fprintf(out, "\n");
+    if (verbose) {
+        fprintf(out, "# Table of VFO mode frequencies.\n");
+        fprintf(out, "# 1) Band number: 1-11\n");
+        fprintf(out, "# 2) Receive frequency in MHz\n");
+        fprintf(out, "# 3) Transmit frequency or +/- offset in MHz\n");
+        fprintf(out, "# 4) Squelch tone for receive, or '-' to disable\n");
+        fprintf(out, "# 5) Squelch tone for transmit, or '-' to disable\n");
+        fprintf(out, "# 6) Dial step in KHz: 5, 9, 10, 12.5, 15, 20, 25, 50, 100\n");
+        fprintf(out, "# 7) Transmit power: High, Low\n");
+        fprintf(out, "# 8) Modulation: FM, AM, WFM, NFM, Auto\n");
+        fprintf(out, "#\n");
+    }
     fprintf(out, "VFO     Receive  Transmit R-Squel T-Squel Step  Power Modulation\n");
     for (i=0; i<12; i++) {
         int rx_hz, tx_hz, rx_ctcs, tx_ctcs, rx_dcs, tx_dcs;
@@ -1032,9 +1085,9 @@ static void vx2_print_config(FILE *out, int verbose)
         fprintf(out, "# 3) Transmit frequency or +/- offset in MHz\n");
         fprintf(out, "# 4) Squelch tone for receive, or '-' to disable\n");
         fprintf(out, "# 5) Squelch tone for transmit, or '-' to disable\n");
-        fprintf(out, "# 6) Transmit power: High, Low\n");
-        fprintf(out, "# 7) Modulation: FM, AM, WFM, NFM, Auto\n");
-        fprintf(out, "# 8) Frequency dial step in KHz: 5, 9, 10, 12.5, 15, 20, 25, 50, 100\n");
+        fprintf(out, "# 6) Dial step in KHz: 5, 9, 10, 12.5, 15, 20, 25, 50, 100\n");
+        fprintf(out, "# 7) Transmit power: High, Low\n");
+        fprintf(out, "# 8) Modulation: FM, AM, WFM, NFM, Auto\n");
         fprintf(out, "#\n");
     }
     fprintf(out, "Home    Receive  Transmit R-Squel T-Squel Step  Power Modulation\n");
@@ -1342,6 +1395,99 @@ badtx:      fprintf(stderr, "Bad transmit frequency.\n");
 }
 
 //
+// Parse one line of VFO channel table.
+// Return 0 on failure.
+//
+static int parse_vfo(int first_row, char *line)
+{
+    char band_str[256], rxfreq_str[256], offset_str[256], rq_str[256];
+    char tq_str[256], power_str[256], mod_str[256], step_str[256];
+    int band, tmode, tone, dcs, power, amfm, step;
+    double rx_mhz, tx_mhz;
+
+    if (sscanf(line, "%s %s %s %s %s %s %s %s",
+        band_str, rxfreq_str, offset_str, rq_str, tq_str,
+        step_str, power_str, mod_str) != 8)
+        return 0;
+
+    band = atoi(band_str);
+    if (band < 1 || band > 11) {
+        fprintf(stderr, "Incorrect band.\n");
+        return 0;
+    }
+
+    if (sscanf(rxfreq_str, "%lf", &rx_mhz) != 1 ||
+        ! is_valid_frequency(rx_mhz)) {
+        fprintf(stderr, "Bad receive frequency.\n");
+        return 0;
+    }
+    if (offset_str[0] == '-' && offset_str[1] == 0) {
+        tx_mhz = rx_mhz;
+    } else {
+        if (sscanf(offset_str, "%lf", &tx_mhz) != 1) {
+badtx:      fprintf(stderr, "Bad transmit frequency.\n");
+            return 0;
+        }
+        if (offset_str[0] == '-' || offset_str[0] == '+')
+            tx_mhz += rx_mhz;
+        if (! is_valid_frequency(tx_mhz))
+            goto badtx;
+    }
+    tmode = encode_squelch(rq_str, tq_str, &tone, &dcs);
+
+    if (strcasecmp("High", power_str) == 0) {
+        power = PWR_HIGH;
+    } else if (strcasecmp("Low", power_str) == 0 ||
+               strcasecmp("-", power_str) == 0) {
+        power = PWR_LOW;
+    } else {
+        fprintf(stderr, "Bad power level.\n");
+        return 0;
+    }
+
+    if (strcasecmp("FM", mod_str) == 0) {
+        amfm = MOD_FM;
+    } else if (strcasecmp("AM", mod_str) == 0) {
+        amfm = MOD_AM;
+    } else if (strcasecmp("WFM", mod_str) == 0) {
+        amfm = MOD_WFM;
+    } else if (strcasecmp("NFM", mod_str) == 0) {
+        amfm = MOD_NFM;
+    } else if (strcasecmp("Auto", mod_str) == 0) {
+        amfm = MOD_AUTO;
+    } else {
+        fprintf(stderr, "Bad modulation.\n");
+        return 0;
+    }
+
+    if (strcmp("5", step_str) == 0) {
+        step = STEP_5;
+    } else if (strcmp("9", step_str) == 0) {
+        step = STEP_9;
+    } else if (strcmp("10", step_str) == 0) {
+        step = STEP_10;
+    } else if (strcmp("12.5", step_str) == 0) {
+        step = STEP_12_5;
+    } else if (strcmp("15", step_str) == 0) {
+        step = STEP_15;
+    } else if (strcmp("20", step_str) == 0) {
+        step = STEP_20;
+    } else if (strcmp("25", step_str) == 0) {
+        step = STEP_25;
+    } else if (strcmp("50", step_str) == 0) {
+        step = STEP_50;
+    } else if (strcmp("100", step_str) == 0) {
+        step = STEP_100;
+    } else {
+        fprintf(stderr, "Bad frequency step.\n");
+        return 0;
+    }
+
+    setup_vfo(band, rx_mhz, tx_mhz, tmode, tone, dcs, power, amfm, step);
+    return 1;
+}
+
+//
 // Parse one line of PMS table.
 // Return 0 on failure.
 //
@@ -1390,6 +1536,8 @@ static int vx2_parse_header(char *line)
         return 'C';
     if (strncasecmp(line, "Home", 4) == 0)
         return 'H';
+    if (strncasecmp(line, "VFO", 3) == 0)
+        return 'V';
     if (strncasecmp(line, "PMS", 3) == 0)
         return 'P';
     return 0;
@@ -1404,6 +1552,7 @@ static int vx2_parse_row(int table_id, int first_row, char *line)
     switch (table_id) {
     case 'C': return parse_channel(first_row, line);
     case 'H': return parse_home(first_row, line);
+    case 'V': return parse_vfo(first_row, line);
     case 'P': return parse_pms(first_row, line);
     }
     return 0;
