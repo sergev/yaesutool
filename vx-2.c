@@ -30,7 +30,6 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <stdint.h>
-#include <endian.h>
 #include "radio.h"
 #include "util.h"
 
@@ -537,11 +536,19 @@ static void hz_to_freq(int hz, uint8_t *bcd)
 }
 
 //
+// Convert 16-bit word to/from big endian.
+//
+static uint16_t big_endian_16(uint16_t x)
+{
+    return (x >> 8) | (x << 8);
+}
+
+//
 // Print one line of Banks table.
 //
 static void print_bank(FILE *out, int i)
 {
-    int       nchan = be16toh(*(uint16_t*) &radio_mem[OFFSET_BNCHAN + i*2]);
+    int       nchan = big_endian_16(*(uint16_t*) &radio_mem[OFFSET_BNCHAN + i*2]);
     uint16_t *data  = (uint16_t*) &radio_mem[OFFSET_BANKS + i * 200];
     int       last  = -1;
     int       range = 0;
@@ -550,7 +557,7 @@ static void print_bank(FILE *out, int i)
     if (nchan < 100) {
         fprintf(out, "%4d    ", i + 1);
         for (n=0; n<=nchan; n++) {
-            int cnum = 1 + be16toh(data[n]);
+            int cnum = 1 + big_endian_16(data[n]);
 
             if (cnum == last+1) {
                 range = 1;
@@ -583,7 +590,7 @@ static void setup_bank(int bank_index, int chan_index)
     // Find first empty slot.
     for (n=0; n<100; n++) {
         if (data[n] == 0xffff) {
-            data[n] = htobe16(chan_index);
+            data[n] = big_endian_16(chan_index);
             return;
         }
     }
@@ -1555,13 +1562,13 @@ static int parse_banks(int first_row, char *line)
         memset(&radio_mem[OFFSET_BUSE2], 0xff, 2);
     }
 
+    if (*chan_str == '-')
+        return 1;
+
     char *str   = chan_str;
     int   nchan = 0;
     int   range = 0;
     int   last  = 0;
-
-    if (*str == '-')
-        return 1;
 
     // Parse channel list.
     for (;;) {
@@ -1603,11 +1610,13 @@ static int parse_banks(int first_row, char *line)
     }
 
     // Set number of channels in the bank.
-    *(uint16_t*) &radio_mem[OFFSET_BNCHAN + (bnum-1)*2] = htobe16(nchan-1);
+    *(uint16_t*) &radio_mem[OFFSET_BNCHAN + (bnum-1)*2] = big_endian_16(nchan-1);
 
     // Clear unused flag.
-    memset(&radio_mem[OFFSET_BUSE1], 0, 2);
-    memset(&radio_mem[OFFSET_BUSE2], 0, 2);
+    if (nchan > 0) {
+        memset(&radio_mem[OFFSET_BUSE1], 0, 2);
+        memset(&radio_mem[OFFSET_BUSE2], 0, 2);
+    }
     return 1;
 }
 
