@@ -460,36 +460,79 @@ static void hz_to_freq(int hz, uint8_t *bcd)
 }
 
 //
-// Get a bitmask of banks for a given channel.
+// Is this bank non-empty?
 //
-static int decode_banks(int i)
+static int have_bank(int b)
 {
-    int b, mask, data;
+    unsigned char *data = &radio_mem[OFFSET_BANKS + b * 0x80];
+    int c;
 
-    mask = 0;
-    for (b=0; b<NBANKS; b++) {
-        data = radio_mem [OFFSET_BANKS + b * 0x80 + i/8];
-        if ((data >> (i & 7)) & 1)
-            mask |= 1 << b;
+    for (c=0; c<NCHAN/8; c++) {
+        if (data[c] != 0)
+            return 1;
     }
-    return mask;
+    return 0;
+}
+
+//
+// Do we have any non-empty banks?
+//
+static int have_banks()
+{
+    int b;
+
+    for (b=0; b<NBANKS; b++) {
+        if (have_bank(b))
+            return 1;
+    }
+    return 0;
+}
+
+//
+// Print one line of Banks table.
+//
+static void print_bank(FILE *out, int i)
+{
+    uint8_t *data  = &radio_mem[OFFSET_BANKS + i * 0x80];
+    int      last  = -1;
+    int      range = 0;
+    int      n;
+
+    fprintf(out, "%4d    ", i + 1);
+    for (n=0; n<NCHAN; n++) {
+        int cnum = n + 1;
+        int chan_in_bank = data[n/8] & (1 << (n & 7));
+
+        if (!chan_in_bank)
+            continue;
+
+        if (cnum == last+1) {
+            range = 1;
+        } else {
+            if (range) {
+                fprintf(out, "-%d", last);
+                range = 0;
+            }
+            if (last >= 0)
+                fprintf(out, ",");
+            fprintf(out, "%d", cnum);
+        }
+        last = cnum;
+    }
+    if (range)
+        fprintf(out, "-%d", last);
+    fprintf(out, "\n");
 }
 
 //
 // Set the bitmask of banks for a given channel.
+// Return 0 on failure.
 //
-static void setup_banks(int i, int mask)
+static void setup_bank(int bank_index, int chan_index)
 {
-    int b;
-    unsigned char *data;
+    uint8_t *data = &radio_mem[OFFSET_BANKS + bank_index*0x80 + chan_index/8];
 
-    for (b=0; b<NBANKS; b++) {
-        data = &radio_mem [OFFSET_BANKS + b * 0x80 + i/8];
-        if ((mask >> b) & 1)
-            *data |= 1 << (i & 7);
-        else
-            *data &= ~(1 << (i & 7));
-    }
+    *data |= 1 << (chan_index & 7);
 }
 
 //
@@ -573,7 +616,7 @@ static void encode_name(int i, char *name)
 static void decode_channel(int i, int seek, char *name,
     int *rx_hz, int *tx_hz, int *rx_ctcs, int *tx_ctcs,
     int *rx_dcs, int *tx_dcs, int *power, int *wide,
-    int *scan, int *isam, int *step, int *banks)
+    int *scan, int *isam, int *step)
 {
     memory_channel_t *ch = i + (memory_channel_t*) &radio_mem[seek];
     int scan_data = radio_mem[OFFSET_SCAN + i/4];
@@ -582,8 +625,6 @@ static void decode_channel(int i, int seek, char *name,
     *power = *wide = *scan = *isam = *step = 0;
     if (name)
         *name = 0;
-    if (banks)
-        *banks = 0;
     if (! ch->used && (seek == OFFSET_CHANNELS || seek == OFFSET_PMS))
         return;
 
@@ -643,16 +684,13 @@ static void decode_channel(int i, int seek, char *name,
     *scan = (scan_data << ((i & 3) * 2) >> 6) & 3;
     *isam = ch->isam;
     *step = ch->step;
-
-    if (seek == OFFSET_CHANNELS)
-        *banks = decode_banks(i);
 }
 
 //
 // Set the parameters for a given memory channel.
 //
 static void setup_channel(int i, char *name, double rx_mhz, double tx_mhz,
-    int tmode, int tone, int dtcs, int power, int wide, int scan, int isam, int banks)
+    int tmode, int tone, int dtcs, int power, int wide, int scan, int isam)
 {
     memory_channel_t *ch = i + (memory_channel_t*) &radio_mem[OFFSET_CHANNELS];
 
@@ -694,7 +732,6 @@ static void setup_channel(int i, char *name, double rx_mhz, double tx_mhz,
     *scan_data &= ~(3 << scan_shift);
     *scan_data |= scan << scan_shift;
 
-    setup_banks(i, banks);
     encode_name(i, name);
 }
 
@@ -802,26 +839,6 @@ static void print_squelch(FILE *out, int ctcs, int dcs)
 }
 
 //
-// Print the list of channel banks.
-//
-static char *format_banks(int mask)
-{
-    static char buf [16];
-    char *p;
-    int b;
-
-    p = buf;
-    for (b=0; b<NBANKS; b++) {
-        if ((mask >> b) & 1)
-            *p++ = "1234567890" [b];
-    }
-    if (p == buf)
-        *p++ = '-';
-    *p = 0;
-    return buf;
-}
-
-//
 // Print full information about the device configuration.
 //
 static void ft60_print_config(FILE *out, int verbose)
@@ -845,17 +862,16 @@ static void ft60_print_config(FILE *out, int verbose)
         fprintf(out, "# 7) Transmit power: High, Mid, Low\n");
         fprintf(out, "# 8) Modulation: Wide, Narrow, AM\n");
         fprintf(out, "# 9) Scan mode: +, -, Only\n");
-        fprintf(out, "# 10) List of banks 0..9, or '-' to disable\n");
         fprintf(out, "#\n");
     }
-    fprintf(out, "Channel Name    Receive  Transmit R-Squel T-Squel Power Modulation Scan Banks\n");
+    fprintf(out, "Channel Name    Receive  Transmit R-Squel T-Squel Power Modulation Scan\n");
     for (i=0; i<NCHAN; i++) {
         int rx_hz, tx_hz, rx_ctcs, tx_ctcs, rx_dcs, tx_dcs;
-        int power, wide, scan, isam, step, banks;
+        int power, wide, scan, isam, step;
         char name[17];
 
         decode_channel(i, OFFSET_CHANNELS, name, &rx_hz, &tx_hz, &rx_ctcs, &tx_ctcs,
-            &rx_dcs, &tx_dcs, &power, &wide, &scan, &isam, &step, &banks);
+            &rx_dcs, &tx_dcs, &power, &wide, &scan, &isam, &step);
         if (rx_hz == 0) {
             // Channel is disabled
             continue;
@@ -868,12 +884,29 @@ static void ft60_print_config(FILE *out, int verbose)
         fprintf(out, "   ");
         print_squelch(out, tx_ctcs, tx_dcs);
 
-        fprintf(out, "   %-4s  %-10s %-4s %s\n", POWER_NAME[power],
-            isam ? "AM" : wide ? "Wide" : "Narrow", SCAN_NAME[scan],
-            format_banks(banks));
+        fprintf(out, "   %-4s  %-10s %s\n", POWER_NAME[power],
+            isam ? "AM" : wide ? "Wide" : "Narrow", SCAN_NAME[scan]);
     }
     if (verbose)
         print_squelch_tones(out, 1);
+
+    //
+    // Banks.
+    //
+    if (have_banks()) {
+        fprintf(out, "\n");
+        if (verbose) {
+            fprintf(out, "# Table of channel banks.\n");
+            fprintf(out, "# 1) Bank number: 1-%d\n", NBANKS);
+            fprintf(out, "# 2) List of channels: numbers and ranges (N-M) separated by comma\n");
+            fprintf(out, "#\n");
+        }
+        fprintf(out, "Bank    Channels\n");
+        for (i=0; i<NBANKS; i++) {
+            if (have_bank(i))
+                print_bank(out, i);
+        }
+    }
 
     //
     // Home channels.
@@ -896,7 +929,7 @@ static void ft60_print_config(FILE *out, int verbose)
         int power, wide, scan, isam, step;
 
         decode_channel(i, OFFSET_HOME, 0, &rx_hz, &tx_hz, &rx_ctcs, &tx_ctcs,
-            &rx_dcs, &tx_dcs, &power, &wide, &scan, &isam, &step, 0);
+            &rx_dcs, &tx_dcs, &power, &wide, &scan, &isam, &step);
 
         fprintf(out, "%5s   %8.4f ", BAND_NAME[i], rx_hz / 1000000.0);
         print_offset(out, rx_hz, tx_hz);
@@ -926,9 +959,9 @@ static void ft60_print_config(FILE *out, int verbose)
         int power, wide, scan, isam, step;
 
         decode_channel(i*2, OFFSET_PMS, 0, &lower_hz, &tx_hz, &rx_ctcs, &tx_ctcs,
-            &rx_dcs, &tx_dcs, &power, &wide, &scan, &isam, &step, 0);
+            &rx_dcs, &tx_dcs, &power, &wide, &scan, &isam, &step);
         decode_channel(i*2+1, OFFSET_PMS, 0, &upper_hz, &tx_hz, &rx_ctcs, &tx_ctcs,
-            &rx_dcs, &tx_dcs, &power, &wide, &scan, &isam, &step, 0);
+            &rx_dcs, &tx_dcs, &power, &wide, &scan, &isam, &step);
         if (lower_hz == 0 && upper_hz == 0)
             continue;
 
@@ -1063,26 +1096,6 @@ static int default_step(double mhz)
 #endif
 
 //
-// Parse the 'banks' parameter value.
-//
-static int encode_banks(char *str)
-{
-    int mask;
-
-    if (*str == '-')
-        return 0;
-
-    for (mask=0; *str; str++) {
-        if (*str < '0' || *str > '9') {
-            fprintf(stderr, "Bad banks mask = '%s'\n", str);
-            exit(-1);
-        }
-        mask |= 1 << (*str - '0');
-    }
-    return mask;
-}
-
-//
 // Parse one line of memory channel table.
 // Start_flag is 1 for the first table row.
 // Return 0 on failure.
@@ -1091,14 +1104,14 @@ static int parse_channel(int first_row, char *line)
 {
     char num_str[256], name_str[256], rxfreq_str[256], offset_str[256];
     char rq_str[256], tq_str[256], power_str[256], wide_str[256];
-    char scan_str[256], banks_str[256];
-    int num, tmode, tone, dtcs, power, wide, scan, isam, banks;
+    char scan_str[256];
+    int num, tmode, tone, dtcs, power, wide, scan, isam;
     double rx_mhz, tx_mhz;
 
     //TODO
-    if (sscanf(line, "%s %s %s %s %s %s %s %s %s %s",
+    if (sscanf(line, "%s %s %s %s %s %s %s %s %s",
         num_str, name_str, rxfreq_str, offset_str, rq_str, tq_str, power_str,
-        wide_str, scan_str, banks_str) != 10)
+        wide_str, scan_str) != 9)
         return 0;
 
     num = atoi(num_str);
@@ -1159,18 +1172,16 @@ badtx:  fprintf(stderr, "Bad transmit frequency.\n");
         return 0;
     }
 
-    banks = encode_banks(banks_str);
-
     if (first_row) {
         // On first entry, erase the channel table.
         int i;
         for (i=0; i<NCHAN; i++) {
-            setup_channel(i, 0, 0, 0, 0, TONE_DEFAULT, 0, 0, 1, 0, 0, 0);
+            setup_channel(i, 0, 0, 0, 0, TONE_DEFAULT, 0, 0, 1, 0, 0);
         }
     }
 
     setup_channel(num-1, name_str, rx_mhz, tx_mhz,
-        tmode, tone, dtcs, power, wide, scan, isam, banks);
+        tmode, tone, dtcs, power, wide, scan, isam);
     return 1;
 }
 
@@ -1285,6 +1296,78 @@ static int parse_pms(int first_row, char *line)
 }
 
 //
+// Parse one line of Banks table.
+// Return 0 on failure.
+//
+static int parse_banks(int first_row, char *line)
+{
+    char num_str[256], chan_str[256];
+    int bnum;
+
+    if (sscanf(line, "%s %s", num_str, chan_str) != 2)
+        return 0;
+
+    bnum = atoi(num_str);
+    if (bnum < 1 || bnum > NBANKS) {
+        fprintf(stderr, "Bad bank number.\n");
+        return 0;
+    }
+
+    if (first_row) {
+        // On first entry, erase the Banks table.
+        memset(&radio_mem[OFFSET_BANKS], 0, NBANKS * 0x80);
+    }
+
+    if (*chan_str == '-')
+        return 1;
+
+    char *str   = chan_str;
+    int   nchan = 0;
+    int   range = 0;
+    int   last  = 0;
+
+    // Parse channel list.
+    for (;;) {
+        char *eptr;
+        int cnum = strtoul(str, &eptr, 10);
+
+        if (eptr == str) {
+            fprintf(stderr, "Bank %d: wrong channel list '%s'.\n", bnum, str);
+            return 0;
+        }
+        if (cnum < 1 || cnum > 100) {
+            fprintf(stderr, "Bank %d: wrong channel number %d.\n", bnum, cnum);
+            return 0;
+        }
+
+        if (range) {
+            // Add range.
+            int c;
+            for (c=last; c<cnum; c++) {
+                setup_bank(bnum-1, c);
+                nchan++;
+            }
+        } else {
+            // Add single channel.
+            setup_bank(bnum-1, cnum-1);
+            nchan++;
+        }
+
+        if (*eptr == 0)
+            break;
+
+        if (*eptr != ',' && *eptr != '-') {
+            fprintf(stderr, "Bank %d: wrong channel list '%s'.\n", bnum, eptr);
+            return 0;
+        }
+        range = (*eptr == '-');
+        last = cnum;
+        str = eptr + 1;
+    }
+    return 1;
+}
+
+//
 // Parse table header.
 // Return table id, or 0 in case of error.
 //
@@ -1296,6 +1379,8 @@ static int ft60_parse_header(char *line)
         return 'H';
     if (strncasecmp(line, "PMS", 3) == 0)
         return 'P';
+    if (strncasecmp(line, "Bank", 4) == 0)
+        return 'B';
     return 0;
 }
 
@@ -1309,6 +1394,7 @@ static int ft60_parse_row(int table_id, int first_row, char *line)
     case 'C': return parse_channel(first_row, line);
     case 'H': return parse_home(first_row, line);
     case 'P': return parse_pms(first_row, line);
+    case 'B': return parse_banks(first_row, line);
     }
     return 0;
 }
