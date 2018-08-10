@@ -30,6 +30,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <stdint.h>
+#include <endian.h>
 #include "radio.h"
 #include "util.h"
 
@@ -38,10 +39,13 @@
 #define NPMS            50
 #define MEMSZ           32594
 
+#define OFFSET_BUSE1    0x005a  // 0xffff when banks unused
+#define OFFSET_BUSE2    0x00da  // 0xffff when banks unused
+#define OFFSET_BNCHAN   0x016a  // 20 banks, 2 bytes per bank: 0xffff when bank[i] unused
 #define OFFSET_WX       0x0396  // 10 WX channel names
 #define OFFSET_HOME     0x03d2  // 12 home channels
 #define OFFSET_VFO      0x04e2  // 12 variable frequency channels
-#define OFFSET_BANKS    0x05c2  // 20 banks by 100 channels
+#define OFFSET_BANKS    0x05c2  // 20 banks, 100 channels, 2 bytes per channel
 #define OFFSET_FLAGS    0x1562  // 500 bytes: four bits per channel
 #define OFFSET_CHANNELS 0x17c2  // 1000 memory channels
 #define OFFSET_PMS      0x5e12  // 50 channel pairs: programmable memory scan
@@ -532,80 +536,60 @@ static void hz_to_freq(int hz, uint8_t *bcd)
              (hz / 1000      % 10);
 }
 
-#if 0 // TODO
 //
-// Get a bitmask of banks for a given channel.
+// Print one line of Banks table.
 //
-static int decode_banks(int i)
+static void print_bank(FILE *out, int i)
 {
-    int b, mask, data;
+    int       nchan = be16toh(*(uint16_t*) &radio_mem[OFFSET_BNCHAN + i*2]);
+    uint16_t *data  = (uint16_t*) &radio_mem[OFFSET_BANKS + i * 200];
+    int       last  = -1;
+    int       range = 0;
+    int       n;
 
-    mask = 0;
-    for (b=0; b<NBANKS; b++) {
-        data = radio_mem [OFFSET_BANKS + b * 0x80 + i/8];
-        if ((data >> (i & 7)) & 1)
-            mask |= 1 << b;
+    if (nchan < 100) {
+        fprintf(out, "%4d    ", i + 1);
+        for (n=0; n<=nchan; n++) {
+            int cnum = 1 + be16toh(data[n]);
+
+            if (cnum == last+1) {
+                range = 1;
+            } else {
+                if (range) {
+                    fprintf(out, "-%d", last);
+                    range = 0;
+                }
+                if (n > 0)
+                    fprintf(out, ",");
+                fprintf(out, "%d", cnum);
+            }
+            last = cnum;
+        }
+        if (range)
+            fprintf(out, "-%d", last);
+        fprintf(out, "\n");
     }
-    return mask;
 }
 
 //
 // Set the bitmask of banks for a given channel.
+// Return 0 on failure.
 //
-static void setup_banks(int i, int mask)
+static void setup_bank(int bank_index, int chan_index)
 {
-    int b;
-    unsigned char *data;
+    uint16_t *data = (uint16_t*) &radio_mem[OFFSET_BANKS + bank_index * 200];
+    int n;
 
-    for (b=0; b<NBANKS; b++) {
-        data = &radio_mem[OFFSET_BANKS + b * 0x80 + i/8];
-        if ((mask >> b) & 1)
-            *data |= 1 << (i & 7);
-        else
-            *data &= ~(1 << (i & 7));
-    }
-}
-
-//
-// Print the list of channel banks.
-//
-static char *format_banks(int mask)
-{
-    static char buf [16];
-    char *p;
-    int b;
-
-    p = buf;
-    for (b=0; b<NBANKS; b++) {
-        if ((mask >> b) & 1)
-            *p++ = "1234567890" [b];
-    }
-    if (p == buf)
-        *p++ = '-';
-    *p = 0;
-    return buf;
-}
-
-//
-// Parse the 'banks' parameter value.
-//
-static int encode_banks(char *str)
-{
-    int mask;
-
-    if (*str == '-')
-        return 0;
-
-    for (mask=0; *str; str++) {
-        if (*str < '0' || *str > '9') {
-            fprintf(stderr, "Bad banks mask = '%s'\n", str);
-            exit(-1);
+    // Find first empty slot.
+    for (n=0; n<100; n++) {
+        if (data[n] == 0xffff) {
+            data[n] = htobe16(chan_index);
+            return;
         }
-        mask |= 1 << (*str - '0');
     }
-    return mask;
+    fprintf(stderr, "Bank %d: too many channels.\n", bank_index + 1);
+    exit(-1);
 }
-#endif
 
 //
 // Extract channel name.
@@ -671,7 +655,6 @@ static void encode_name(uint8_t *internal, char *name)
         // Display name.
         internal[0] |= 0x80;
     }
-//fprintf(stderr, "--- %s() name = '%s', bytes = %02x %02x %02x, offset = %#x\n", __func__, name, internal[0], internal[1], internal[2], internal - radio_mem);
 }
 
 //
@@ -1032,6 +1015,26 @@ static void vx2_print_config(FILE *out, int verbose)
     }
     if (verbose)
         print_squelch_tones(out, 1);
+
+    //
+    // Banks.
+    //
+    uint16_t *bank_use1 = (uint16_t*) &radio_mem[OFFSET_BUSE1];
+    uint16_t *bank_use2 = (uint16_t*) &radio_mem[OFFSET_BUSE2];
+
+    if (*bank_use1 != 0xffff || *bank_use2 != 0xffff) {
+        fprintf(out, "\n");
+        if (verbose) {
+            fprintf(out, "# Table of channel banks.\n");
+            fprintf(out, "# 1) Bank number: 1-20\n");
+            fprintf(out, "# 2) List of channels: numbers and ranges (N-M) separated by comma\n");
+            fprintf(out, "#\n");
+        }
+        fprintf(out, "Bank    Channels\n");
+        for (i=0; i<NBANKS; i++) {
+            print_bank(out, i);
+        }
+    }
 
     //
     // VFO channels.
@@ -1527,6 +1530,88 @@ static int parse_pms(int first_row, char *line)
 }
 
 //
+// Parse one line of Banks table.
+// Return 0 on failure.
+//
+static int parse_banks(int first_row, char *line)
+{
+    char num_str[256], chan_str[256];
+    int bnum;
+
+    if (sscanf(line, "%s %s", num_str, chan_str) != 2)
+        return 0;
+
+    bnum = atoi(num_str);
+    if (bnum < 1 || bnum > NBANKS) {
+        fprintf(stderr, "Bad bank number.\n");
+        return 0;
+    }
+
+    if (first_row) {
+        // On first entry, erase the Banks table.
+        memset(&radio_mem[OFFSET_BANKS], 0xff, NBANKS * 200);
+        memset(&radio_mem[OFFSET_BNCHAN], 0xff, NBANKS * 2);
+        memset(&radio_mem[OFFSET_BUSE1], 0xff, 2);
+        memset(&radio_mem[OFFSET_BUSE2], 0xff, 2);
+    }
+
+    char *str   = chan_str;
+    int   nchan = 0;
+    int   range = 0;
+    int   last  = 0;
+
+    if (*str == '-')
+        return 1;
+
+    // Parse channel list.
+    for (;;) {
+        char *eptr;
+        int cnum = strtoul(str, &eptr, 10);
+
+        if (eptr == str) {
+            fprintf(stderr, "Bank %d: wrong channel list '%s'.\n", bnum, str);
+            return 0;
+        }
+        if (cnum < 1 || cnum > 100) {
+            fprintf(stderr, "Bank %d: wrong channel number %d.\n", bnum, cnum);
+            return 0;
+        }
+
+        if (range) {
+            // Add range.
+            int c;
+            for (c=last; c<cnum; c++) {
+                setup_bank(bnum-1, c);
+                nchan++;
+            }
+        } else {
+            // Add single channel.
+            setup_bank(bnum-1, cnum-1);
+            nchan++;
+        }
+
+        if (*eptr == 0)
+            break;
+
+        if (*eptr != ',' && *eptr != '-') {
+            fprintf(stderr, "Bank %d: wrong channel list '%s'.\n", bnum, eptr);
+            return 0;
+        }
+        range = (*eptr == '-');
+        last = cnum;
+        str = eptr + 1;
+    }
+
+    // Set number of channels in the bank.
+    *(uint16_t*) &radio_mem[OFFSET_BNCHAN + (bnum-1)*2] = htobe16(nchan-1);
+
+    // Clear unused flag.
+    memset(&radio_mem[OFFSET_BUSE1], 0, 2);
+    memset(&radio_mem[OFFSET_BUSE2], 0, 2);
+    return 1;
+}
+
+//
 // Parse table header.
 // Return table id, or 0 in case of error.
 //
@@ -1540,6 +1625,8 @@ static int vx2_parse_header(char *line)
         return 'V';
     if (strncasecmp(line, "PMS", 3) == 0)
         return 'P';
+    if (strncasecmp(line, "Bank", 4) == 0)
+        return 'B';
     return 0;
 }
 
@@ -1554,6 +1641,7 @@ static int vx2_parse_row(int table_id, int first_row, char *line)
     case 'H': return parse_home(first_row, line);
     case 'V': return parse_vfo(first_row, line);
     case 'P': return parse_pms(first_row, line);
+    case 'B': return parse_banks(first_row, line);
     }
     return 0;
 }

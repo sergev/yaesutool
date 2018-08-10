@@ -20,24 +20,12 @@ yaesutool:	$(OBJS)
 clean:
 		rm -f *~ *.o core yaesutool
 
-install:	yaesutool yaesutool-ru.mo
+install:	yaesutool
 		install -c -s yaesutool /usr/local/bin/yaesutool
-		install -D yaesutool-ru.mo /usr/local/share/locale/ru/LC_MESSAGES/yaesutool.mo
 
 yaesutool.linux: yaesutool
 		cp -p $< $@
 		strip $@
-
-yaesutool.po:   $(SRCS)
-		xgettext --from-code=utf-8 --keyword=_ \
-                    --package-name=YaesuTool --package-version=$(VERSION) \
-                    $(SRCS) -o $@
-
-yaesutool-ru.mo: yaesutool-ru.po
-		msgfmt -c -o $@ $<
-
-yaesutool-ru-cp866.mo: yaesutool-ru.po
-		iconv -f utf-8 -t cp866 $< | sed 's/UTF-8/CP866/' | msgfmt -c -o $@ -
 
 ###
 ft-60.o: ft-60.c radio.h util.h
