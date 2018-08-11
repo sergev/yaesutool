@@ -538,9 +538,15 @@ static void hz_to_freq(int hz, uint8_t *bcd)
 //
 // Convert 16-bit word to/from big endian.
 //
-static uint16_t big_endian_16(uint16_t x)
+static inline uint16_t big_endian_16(uint16_t x)
 {
+#if defined __BYTE_ORDER && defined __BIG_ENDIAN
+    return x;
+#elif defined __BYTE_ORDER && defined __LITTLE_ENDIAN
     return (x >> 8) | (x << 8);
+#else
+#   error Byte order undefined!
+#endif
 }
 
 //
