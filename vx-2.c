@@ -540,9 +540,9 @@ static void hz_to_freq(int hz, uint8_t *bcd)
 //
 static inline uint16_t big_endian_16(uint16_t x)
 {
-#if defined __BYTE_ORDER && defined __BIG_ENDIAN
+#if __BIG_ENDIAN__ == 1
     return x;
-#elif defined __BYTE_ORDER && defined __LITTLE_ENDIAN
+#elif __LITTLE_ENDIAN__ == 1
     return (x >> 8) | (x << 8);
 #else
 #   error Byte order undefined!
