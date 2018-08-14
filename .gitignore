@@ -1,5 +1,5 @@
 *.o
 yaesutool
-**/device.conf
+device.conf
 *.img
 *.hd
