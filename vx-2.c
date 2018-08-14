@@ -540,9 +540,9 @@ static void hz_to_freq(int hz, uint8_t *bcd)
 //
 static inline uint16_t big_endian_16(uint16_t x)
 {
-#if __BIG_ENDIAN__ == 1
+#if __BIG_ENDIAN__ == 1 || __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
     return x;
-#elif __LITTLE_ENDIAN__ == 1
+#elif __LITTLE_ENDIAN__ == 1 || __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
     return (x >> 8) | (x << 8);
 #else
 #   error Byte order undefined!
@@ -1585,7 +1585,7 @@ static int parse_banks(int first_row, char *line)
             fprintf(stderr, "Bank %d: wrong channel list '%s'.\n", bnum, str);
             return 0;
         }
-        if (cnum < 1 || cnum > 100) {
+        if (cnum < 1 || cnum > NCHAN) {
             fprintf(stderr, "Bank %d: wrong channel number %d.\n", bnum, cnum);
             return 0;
         }
