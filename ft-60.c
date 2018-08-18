@@ -1335,7 +1335,7 @@ static int parse_banks(int first_row, char *line)
             fprintf(stderr, "Bank %d: wrong channel list '%s'.\n", bnum, str);
             return 0;
         }
-        if (cnum < 1 || cnum > 100) {
+        if (cnum < 1 || cnum > NCHAN) {
             fprintf(stderr, "Bank %d: wrong channel number %d.\n", bnum, cnum);
             return 0;
         }
