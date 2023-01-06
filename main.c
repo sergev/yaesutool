@@ -33,6 +33,7 @@
 
 const char version[] = VERSION;
 const char *copyright;
+int serial_verbose;
 
 extern char *optarg;
 extern int optind;

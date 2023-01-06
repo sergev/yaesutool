@@ -1,4 +1,4 @@
-CC		= gcc -m32
+CC		= gcc
 
 CFLAGS		= -g -O -Wall -DMINGW32 -Werror
 LDFLAGS		= -s
